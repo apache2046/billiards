@@ -1,0 +1,10 @@
+{
+  "name": "cuelab-offline-billiards",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Offline WebGL billiards physics lab",
+  "scripts": {
+    "serve": "node tools/serve.js",
+    "test": "node tests/physics-smoke.js"
+  }
+}
