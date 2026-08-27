@@ -99,6 +99,34 @@
           <span><i class="ghost-dot"></i>假想球</span>
         </div>
 
+        <div class="key-hud glass-panel" id="keyHud" aria-label="键盘击球参数">
+          <div class="key-ball" aria-hidden="true">
+            <i class="key-ball-cross x"></i>
+            <i class="key-ball-cross y"></i>
+            <i class="key-ball-safe" id="hudSafe"></i>
+            <i class="key-ball-marker" id="hudMarker"></i>
+          </div>
+          <div class="key-readout">
+            <div class="key-row">
+              <small><kbd>Q</kbd><kbd>E</kbd> 力度</small>
+              <span class="hud-bar"><i id="hudPowerBar"></i></span>
+              <b id="hudPower">62%</b>
+            </div>
+            <div class="key-row">
+              <small><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 打点</small>
+              <b id="hudTip">中心</b>
+            </div>
+            <div class="key-row">
+              <small><kbd>Z</kbd><kbd>C</kbd> 让点微调</small>
+              <b id="hudTrim">0.00°</b>
+            </div>
+            <div class="key-row">
+              <small>仰角 / 出杆</small>
+              <b id="hudSpeed">3° · 3.6 m/s</b>
+            </div>
+          </div>
+        </div>
+
         <div class="power-float" id="powerFloat" aria-hidden="true">
           <div><span id="dragPowerBar"></span></div>
           <strong id="dragPowerLabel">62%</strong>
@@ -255,16 +283,19 @@
     </div>
     <div class="dialog-body">
       <div class="help-grid">
-        <article><b>01</b><h3>瞄准与出杆</h3><p>移动鼠标改变方向；按住台面并沿瞄准线反方向拖动，松手击球。也可用右侧力度滑杆后按空格。</p></article>
-        <article><b>02</b><h3>高低杆与侧塞</h3><p>拖动母球击点。灰色基准线是未补偿瞄向，绿色数值路线包含球杆偏移与台呢回弯；首库标注会显示顺塞、反塞或软塞黏着区。</p></article>
+        <article><b>01</b><h3>瞄准与出杆</h3><p>移动鼠标改变方向,<kbd>Z</kbd>/<kbd>C</kbd> 逐帧水平微调(加塞让点专用);按住台面反向拖动松手击球,或 <kbd>Q</kbd>/<kbd>E</kbd> 调力度后按空格。</p></article>
+        <article><b>02</b><h3>高低杆与侧塞</h3><p>拖动母球击点,或用 <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 精调;虚线圈是当前皮头的防滑杆安全区。灰线是未补偿瞄向,绿色路线包含球杆偏移与台呢回弯。</p></article>
         <article><b>03</b><h3>读懂辅助线</h3><p>青线是母球数值预演，金线是目标球路径。虚线圆为碰撞瞬间的假想球，白色短线表示切球后的 90° 分离方向。</p></article>
         <article><b>04</b><h3>做对照实验</h3><p>用“一键物理实验”固定球位，只改变击点、力度、皮头或台呢。慢动作对照入射角/反弹角及滑动到滚动的转换。</p></article>
       </div>
       <div class="physics-note">
         <div><span>模型范围</span><strong>三维库鼻接触 + 摩擦锥 + 顺毛台呢</strong></div>
-        <p>默认结合乔氏 Q8 金腿公开结构与中式赛事级器材数据标定：中式球规格、钢库圆弧袋角、85 mm 袋口、42 mm 库高与顺毛台呢。球杆模型考虑前端有效质量、皮头摩擦/接触时间、初始偏移和抬杆回弯。胶条形变仍以等效冲量求解，品牌未公开的截面、配方和安装批次只能做可重复的赛事级近似，不能替代实台测量。</p>
+        <p>默认结合乔氏 Q8 金腿公开结构与中式赛事级器材数据标定：中式球规格、钢库圆弧袋角、85 mm 袋口、42 mm 库高与顺毛台呢。球杆模型考虑前端有效质量、皮头摩擦、Cross 刚性冲量初始偏移公式和抬杆回弯。胶条形变仍以等效冲量求解，品牌未公开的截面、配方和安装批次只能做可重复的赛事级近似，不能替代实台测量。</p>
       </div>
       <div class="shortcuts">
+        <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 微调打点</span>
+        <span><kbd>Q</kbd><kbd>E</kbd> 出杆力度</span>
+        <span><kbd>Z</kbd><kbd>C</kbd> 水平让点微调</span>
         <span><kbd>Space</kbd> 击球</span><span><kbd>R</kbd> 重新摆球</span><span><kbd>G</kbd> 辅助线</span><span><kbd>M</kbd> 慢动作</span><span><kbd>Esc</kbd> 暂停</span>
       </div>
       <p class="research-credit">参数与模型校核参考 Pooltool（Apache-2.0）、Mathavan 等人的球/库碰撞论文及 Dr. Dave 的技术资料；本项目 WebGL 与物理代码为独立实现。详细来源见 README。</p>

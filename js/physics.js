@@ -12,7 +12,6 @@
     muSlide: 0.20,
     muRoll: 0.010,
     muSpin: 0.0127,
-    muBall: 0.05,
     restitutionBall: 0.95,
     restitutionCushion: 0.82,
     frictionCushion: 0.20,
@@ -24,7 +23,6 @@
     muSlide: 0.205,
     muRoll: 0.0095,
     muSpin: 0.0127,
-    muBall: 0.05,
     restitutionBall: 0.95,
     restitutionCushion: 0.82,
     frictionCushion: 0.23,
@@ -36,7 +34,6 @@
     muSlide: 0.20,
     muRoll: 0.008,
     muSpin: 0.0115,
-    muBall: 0.05,
     restitutionBall: 0.94,
     restitutionCushion: 0.81,
     frictionCushion: 0.20,
@@ -47,27 +44,33 @@
   const CUE_SPECS = Object.freeze({
     small: Object.freeze({
       id: 'small', label: '小头杆', detail: '中式低偏移木前节', tipDiameter: 0.010, shaftRadius: 0.0061,
-      cueMass: 0.515, effectiveEndMass: 0.0052, squirtFactor: 0.70, spinEfficiency: 0.98,
+      cueMass: 0.515, effectiveEndMass: 0.0052, spinEfficiency: 0.98,
       maxOffset: 0.90, powerEfficiency: 0.985,
     }),
     large: Object.freeze({
       id: 'large', label: '大头杆', detail: '高性能低偏移前节', tipDiameter: 0.0125, shaftRadius: 0.0073,
-      cueMass: 0.535, effectiveEndMass: 0.0064, squirtFactor: 0.84, spinEfficiency: 0.96,
+      cueMass: 0.535, effectiveEndMass: 0.0064, spinEfficiency: 0.96,
       maxOffset: 0.88, powerEfficiency: 1.0,
     }),
   });
 
+  // Alciatore's measured ball-ball sliding friction falls off exponentially with
+  // contact slip speed; this is what makes soft-speed shots throw the most.
+  function ballBallFriction(slipSpeed) {
+    return 0.009951 + 0.108 * Math.exp(-1.088 * slipSpeed);
+  }
+
   const TIP_PRESETS = Object.freeze({
     soft: Object.freeze({
-      id: 'soft', label: '软皮头', friction: 0.72, contactTime: 0.00190,
+      id: 'soft', label: '软皮头', friction: 0.72,
       energyEfficiency: 0.982, spinTransfer: 1.015, safeOffset: 0.91,
     }),
     medium: Object.freeze({
-      id: 'medium', label: '中等皮头', friction: 0.68, contactTime: 0.00165,
+      id: 'medium', label: '中等皮头', friction: 0.68,
       energyEfficiency: 0.990, spinTransfer: 1.0, safeOffset: 0.89,
     }),
     hard: Object.freeze({
-      id: 'hard', label: '硬皮头', friction: 0.63, contactTime: 0.00140,
+      id: 'hard', label: '硬皮头', friction: 0.63,
       energyEfficiency: 0.996, spinTransfer: 0.975, safeOffset: 0.86,
     }),
   });
@@ -276,7 +279,6 @@
       sinkTime: 0,
       sinkDepth: 0,
       sinkTarget: null,
-      swerve: 0,
       lastSpeed: 0,
     };
   }
@@ -443,28 +445,42 @@
       }
       const elevation = clamp(options.elevation || 0, 0, 40) * Math.PI / 180;
       const offset = Math.hypot(tipX, tipY);
+      const ballMass = cue?.mass || this.params.mass;
       const cueRestitution = 0.73;
-      const transfer = (1 + cueRestitution) * spec.cueMass / (spec.cueMass + (cue?.mass || this.params.mass));
+      const transfer = (1 + cueRestitution) * spec.cueMass / (spec.cueMass + ballMass);
       const referenceTransfer = (1 + cueRestitution) * 0.525 / (0.525 + 0.1695);
       const efficiency = transfer / referenceTransfer * spec.powerEfficiency * tipSpec.energyEfficiency * (1 - 0.082 * offset * offset);
       const speed = speedInput * efficiency;
-      const contactTimeFactor = 1 + clamp((tipSpec.contactTime - 0.00165) / 0.00165, -0.18, 0.18) * 0.05;
-      const endMassFactor = 0.84 * spec.effectiveEndMass / 0.0064;
-      const squirt = -tipX * (1.04 + 0.025 * speed) * endMassFactor * contactTimeFactor * Math.PI / 180;
+      // Rigid-impulse squirt (Cross 2008): the gripping tip must accelerate
+      // sideways with the contact point, and the shaft's effective end mass
+      // resists that, deflecting the ball opposite to the English:
+      //   tan α = (5/2)(b/R)c / (1 + (5/2)c² + M/mₑ),  c = √(1 − (b/R)²).
+      // Squirt is nearly speed-independent, matching Dr. Dave's measurements.
+      const contactCos = Math.sqrt(Math.max(0.14, 1 - offset * offset));
+      const massRatio = ballMass / spec.effectiveEndMass;
+      const squirt = -Math.atan(
+        (2.5 * tipX * contactCos) / (1 + 2.5 * contactCos * contactCos + massRatio),
+      );
       const cs = Math.cos(squirt), ss = Math.sin(squirt);
       direction = { x: direction.x * cs - direction.z * ss, z: direction.x * ss + direction.z * cs };
       const angularScale = 2.5 * speed * 0.84 * spec.spinEfficiency * tipSpec.spinTransfer / R;
       const sideTorque = tipX * angularScale * 0.94;
+      // Vertical tip offset always torques about the horizontal side axis, so
+      // follow/draw take no cos(elevation) factor; the side-spin axis tilts
+      // with the cue, which is what later bends elevated-English shots.
       const omega = {
-        x: direction.z * tipY * angularScale * Math.cos(elevation) + direction.x * sideTorque * Math.sin(elevation),
+        x: direction.z * tipY * angularScale + direction.x * sideTorque * Math.sin(elevation),
         y: sideTorque * Math.cos(elevation),
-        z: -direction.x * tipY * angularScale * Math.cos(elevation) + direction.z * sideTorque * Math.sin(elevation),
+        z: -direction.x * tipY * angularScale + direction.z * sideTorque * Math.sin(elevation),
       };
+      // The impulse points forward-and-down along the cue; the slate absorbs
+      // the vertical part, so only the horizontal component survives as speed.
+      const horizontalSpeed = speed * Math.cos(elevation);
       const requestedOffset = Math.hypot(requestedTipX, requestedTipY);
       const miscueMargin = safeOffset - requestedOffset;
       const aimAllowancePerMetre = Math.tan(Math.abs(squirt));
       return {
-        spec, tipSpec, direction, speed, speedInput, tipX, tipY, elevation, squirt, omega,
+        spec, tipSpec, direction, speed, speedInput, horizontalSpeed, tipX, tipY, elevation, squirt, omega,
         safeOffset, frictionContactLimit, miscueMargin, aimAllowancePerMetre,
       };
     }
@@ -487,17 +503,16 @@
       const cue = this.getCueBall();
       if (!cue || cue.pocketed || this.isMoving()) return false;
       const impact = this.cueImpactMetrics(options);
-      cue.vel.x = impact.direction.x * impact.speed;
-      cue.vel.z = impact.direction.z * impact.speed;
+      cue.vel.x = impact.direction.x * impact.horizontalSpeed;
+      cue.vel.z = impact.direction.z * impact.horizontalSpeed;
       cue.omega.x += impact.omega.x;
       cue.omega.y += impact.omega.y;
       cue.omega.z += impact.omega.z;
       // Elevation tilts the side-spin axis in cueImpactMetrics.  The normal
       // cloth-slip solver then produces swerve directly, so no scripted curve
       // force is needed for ordinary elevated-English shots.
-      cue.swerve = 0;
       cue.state = 'sliding';
-      cue.lastSpeed = impact.speed;
+      cue.lastSpeed = impact.horizontalSpeed;
       this.inShot = true;
       this.shotTime = 0;
       this.lastCueMetrics = {
@@ -505,7 +520,7 @@
         omega: { ...impact.omega }, direction: { ...impact.direction },
       };
       this.emit({
-        type: 'cue', ballId: cue.id, position: { ...cue.pos }, speed: impact.speed,
+        type: 'cue', ballId: cue.id, position: { ...cue.pos }, speed: impact.horizontalSpeed,
         tipX: impact.tipX, tipY: impact.tipY, elevation: impact.elevation,
         cueType: impact.spec.id, tipType: impact.tipSpec.id, squirt: impact.squirt,
       });
@@ -564,15 +579,6 @@
       const nap = this.table.clothNap || { x: 1, z: 0 };
       const napProjection = speed > 1e-8 ? (ball.vel.x * nap.x + ball.vel.z * nap.z) / speed : 0;
       const clothResistance = 1 - (this.table.clothNapStrength || 0) * napProjection;
-
-      if (speed > 0.002 && Math.abs(ball.swerve) > 0.002 && Math.abs(ball.omega.y) > 0.5) {
-        const nx = -ball.vel.z / speed;
-        const nz = ball.vel.x / speed;
-        const curveAcceleration = clamp(0.00058 * ball.omega.y * speed * Math.abs(ball.swerve), -0.42, 0.42);
-        ball.vel.x += nx * curveAcceleration * dt;
-        ball.vel.z += nz * curveAcceleration * dt;
-        ball.swerve *= Math.exp(-1.15 * dt);
-      }
 
       if (slip > 0.012) {
         // Contact-slip decays 3.5× as fast as the centre velocity because friction also spins the sphere.
@@ -636,30 +642,56 @@
           a.pos.x -= nx * correction * invA; a.pos.z -= nz * correction * invA;
           b.pos.x += nx * correction * invB; b.pos.z += nz * correction * invB;
 
-          const rA = a.radius, rB = b.radius;
-          const vaX = a.vel.x + a.omega.y * nz * rA;
-          const vaZ = a.vel.z - a.omega.y * nx * rA;
-          const vbX = b.vel.x - b.omega.y * nz * rB;
-          const vbZ = b.vel.z + b.omega.y * nx * rB;
-          const relX = vbX - vaX, relZ = vbZ - vaZ;
-          const relNormal = relX * nx + relZ * nz;
+          const relNormal = (b.vel.x - a.vel.x) * nx + (b.vel.z - a.vel.z) * nz;
           if (relNormal >= -1e-5) continue;
-
           const normalImpulse = -(1 + this.params.restitutionBall) * relNormal / (invA + invB);
+
+          // Full contact-point slip: the equator contact arms are ±R·n̂, so the
+          // relative surface velocity has an in-plane part (side spin + cut)
+          // and a vertical part (follow/draw rubbing).  Solving both in one
+          // friction cone is what makes a rolling cue ball throw less than a
+          // stun shot and lets follow/draw transfer between balls.
+          const rA = a.radius, rB = b.radius;
           const tx = -nz, tz = nx;
-          const relTangent = relX * tx + relZ * tz;
-          const tangentDenom = invA + invB + rA * rA / a.inertia + rB * rB / b.inertia;
-          const rawTangent = -relTangent / tangentDenom;
-          const tangentImpulse = clamp(rawTangent, -this.params.muBall * normalImpulse, this.params.muBall * normalImpulse);
-          const impulseX = normalImpulse * nx + tangentImpulse * tx;
-          const impulseZ = normalImpulse * nz + tangentImpulse * tz;
+          const surfAX = a.vel.x + a.omega.y * nz * rA;
+          const surfAZ = a.vel.z - a.omega.y * nx * rA;
+          const surfAY = (a.omega.z * nx - a.omega.x * nz) * rA;
+          const surfBX = b.vel.x - b.omega.y * nz * rB;
+          const surfBZ = b.vel.z + b.omega.y * nx * rB;
+          const surfBY = -(b.omega.z * nx - b.omega.x * nz) * rB;
+          const slipT = (surfBX - surfAX) * tx + (surfBZ - surfAZ) * tz;
+          const slipY = surfBY - surfAY;
+          const slipSpeed = Math.hypot(slipT, slipY);
+          const mu = ballBallFriction(slipSpeed);
+
+          const denomT = invA + invB + rA * rA / a.inertia + rB * rB / b.inertia;
+          // The slate carries the vertical linear reaction, so vertical rubbing
+          // only exchanges spin (same approximation as the cushion solver).
+          const denomY = rA * rA / a.inertia + rB * rB / b.inertia;
+          let impulseT = -slipT / denomT;
+          let impulseY = -slipY / denomY;
+          const rawFriction = Math.hypot(impulseT, impulseY);
+          const frictionLimit = mu * normalImpulse;
+          if (rawFriction > frictionLimit && rawFriction > 1e-12) {
+            const scale = frictionLimit / rawFriction;
+            impulseT *= scale; impulseY *= scale;
+          }
+
+          const impulseX = normalImpulse * nx + impulseT * tx;
+          const impulseZ = normalImpulse * nz + impulseT * tz;
           a.vel.x -= impulseX * invA; a.vel.z -= impulseZ * invA;
           b.vel.x += impulseX * invB; b.vel.z += impulseZ * invB;
 
-          const torqueA = (-nz * rA) * impulseX + (nx * rA) * impulseZ;
-          const torqueB = (-nz * rB) * impulseX + (nx * rB) * impulseZ;
-          a.omega.y += torqueA / a.inertia;
-          b.omega.y += torqueB / b.inertia;
+          // τ = (±R n̂) × f with friction f = (impulseT·t̂ + impulseY·ŷ); the
+          // normal impulse passes through both centres and adds no torque.
+          const fX = impulseT * tx, fY = impulseY, fZ = impulseT * tz;
+          const crossX = -nz * fY, crossY = nz * fX - nx * fZ, crossZ = nx * fY;
+          a.omega.x -= crossX * rA / a.inertia;
+          a.omega.y -= crossY * rA / a.inertia;
+          a.omega.z -= crossZ * rA / a.inertia;
+          b.omega.x -= crossX * rB / b.inertia;
+          b.omega.y -= crossY * rB / b.inertia;
+          b.omega.z -= crossZ * rB / b.inertia;
           a.state = b.state = 'sliding';
 
           const key = a.id < b.id ? `${a.id}|${b.id}` : `${b.id}|${a.id}`;

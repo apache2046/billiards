@@ -3,7 +3,15 @@
 
   const { PhysicsWorld } = window.BilliardsPhysics;
   const { BilliardsRenderer } = window.BilliardsRenderer;
-  const { V2, clamp, lerp } = window.BilliardsMath;
+  const { V2, clamp } = window.BilliardsMath;
+
+  // Hold-to-adjust keys are integrated per frame for smooth, fine control:
+  // WASD moves the tip contact point, Q/E scales cue speed, Z/C trims the
+  // horizontal aim angle for English (squirt/swerve) compensation practice.
+  const ADJUST_KEYS = new Set(['w', 'a', 's', 'd', 'q', 'e', 'z', 'c']);
+  const TIP_RATE = 0.85;      // tip offset (fraction of R) per second
+  const POWER_RATE = 0.5;     // power fraction per second
+  const TRIM_RATE = 1.8;      // aim trim degrees per second
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => [...document.querySelectorAll(selector)];
 
@@ -30,10 +38,11 @@
       const gain = ctx.createGain();
       const filter = ctx.createBiquadFilter();
       filter.type = kind === 'pocket' ? 'lowpass' : 'bandpass';
-      filter.frequency.value = kind === 'rail' ? 430 : kind === 'pocket' ? 210 : kind === 'cue' ? 720 : 980;
-      filter.Q.value = kind === 'pocket' ? 0.7 : 1.2;
+      // Phenolic resin balls click around 2–3 kHz; the leather tip is duller.
+      filter.frequency.value = kind === 'rail' ? 400 : kind === 'pocket' ? 210 : kind === 'cue' ? 1150 : 2550;
+      filter.Q.value = kind === 'pocket' ? 0.7 : kind === 'ball' ? 2.4 : 1.2;
       gain.gain.setValueAtTime(Math.min(0.18, 0.035 + intensity * 0.075), now);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + (kind === 'pocket' ? 0.19 : 0.055));
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + (kind === 'pocket' ? 0.19 : kind === 'ball' ? 0.042 : 0.055));
       const frames = Math.max(1, Math.floor(ctx.sampleRate * (kind === 'pocket' ? 0.18 : 0.055)));
       const buffer = ctx.createBuffer(1, frames, ctx.sampleRate);
       const channel = buffer.getChannelData(0);
@@ -77,6 +86,8 @@
       this.tipY = 0;
       this.power = 0.62;
       this.elevation = 3;
+      this.keys = new Set();
+      this.aimTrim = 0;
       this.drag = null;
       this.pullback = 0;
       this.paused = false;
@@ -111,8 +122,55 @@
       this.bindUI();
       this.world.onEvent((event) => this.handlePhysicsEvent(event));
       this.updateAllUI();
+      this.applyStartupParams();
       this.schedulePrediction(true);
       requestAnimationFrame((time) => this.frame(time));
+    }
+
+    // Shareable setup via URL, e.g. ?tipx=0.5&tipy=-0.3&power=0.8&elev=6&aim=15&view=top&shoot=1
+    applyStartupParams() {
+      const params = new URLSearchParams(window.location.search);
+      if (![...params.keys()].length) return;
+      const num = (key) => {
+        const value = parseFloat(params.get(key));
+        return Number.isFinite(value) ? value : null;
+      };
+      const mode = params.get('mode');
+      if (mode && $(`#gameMode option[value="${CSS.escape(mode)}"]`)) this.changeMode(mode);
+      if (params.get('view') === 'top') {
+        this.renderer.toggleCamera();
+        $('#cameraButton').classList.add('active');
+      }
+      const tipX = num('tipx'), tipY = num('tipy');
+      if (tipX != null || tipY != null) this.setSpin(tipX ?? 0, tipY ?? 0);
+      const power = num('power');
+      if (power != null) { this.power = clamp(power, 0.03, 1); this.updatePowerUI(); }
+      const elevation = num('elev');
+      if (elevation != null) {
+        this.elevation = clamp(Math.round(elevation), 0, 35);
+        this.updateElevationUI(); this.updateSpinUI();
+      }
+      const aim = num('aim');
+      if (aim != null) {
+        const radians = aim * Math.PI / 180;
+        this.aimDirection = { x: Math.cos(radians), z: Math.sin(radians) };
+      }
+      const trim = num('trim');
+      if (trim != null) this.rotateAim(trim);
+      if (params.get('shoot') === '1') {
+        // Optional t=<seconds> fast-forwards the shot so a shared link (or a
+        // headless screenshot) lands exactly mid-flight.
+        const fastForward = clamp(num('t') ?? 0, 0, 12);
+        this.shoot();
+        if (fastForward > 0 && this.world.inShot) {
+          const dt = 1 / 300;
+          for (let i = 0; i < fastForward * 300 && this.world.isMoving(); i += 1) {
+            this.world.step(dt);
+            this.trailFrame += 1;
+            if (this.trailsEnabled && this.trailFrame % 5 === 0) this.captureTrails();
+          }
+        }
+      }
     }
 
     emptyShotRecord() {
@@ -132,8 +190,6 @@
     }
 
     bindUI() {
-      this.world.onEvent((event) => this.handlePhysicsEvent(event));
-
       $('#gameMode').addEventListener('change', (event) => this.changeMode(event.target.value));
       $('#resetButton').addEventListener('click', () => this.resetRack());
       $('#soundToggle').addEventListener('click', () => {
@@ -227,12 +283,22 @@
 
       window.addEventListener('keydown', (event) => {
         if (/INPUT|SELECT|TEXTAREA/.test(document.activeElement?.tagName)) return;
+        if (event.ctrlKey || event.metaKey || event.altKey) return;
+        const key = event.key.toLowerCase();
+        if (ADJUST_KEYS.has(key) && !$('#helpDialog').open) {
+          this.keys.add(key);
+          event.preventDefault();
+          return;
+        }
+        if (event.repeat) return;
         if (event.code === 'Space') { event.preventDefault(); this.shoot(); }
-        else if (event.key.toLowerCase() === 'r') this.resetRack();
-        else if (event.key.toLowerCase() === 'g') this.toggleGuides();
-        else if (event.key.toLowerCase() === 'm') { $('#slowButton').click(); }
+        else if (key === 'r') this.resetRack();
+        else if (key === 'g') this.toggleGuides();
+        else if (key === 'm') { $('#slowButton').click(); }
         else if (event.key === 'Escape' && !$('#helpDialog').open) this.togglePause();
       });
+      window.addEventListener('keyup', (event) => this.keys.delete(event.key.toLowerCase()));
+      window.addEventListener('blur', () => this.keys.clear());
       window.addEventListener('resize', () => this.schedulePrediction(true));
     }
 
@@ -307,13 +373,43 @@
       const vector = V2.sub(point, cue.pos);
       if (V2.length(vector) < cue.radius * 1.4) return;
       this.aimDirection = V2.normalize(vector);
+      if (this.aimTrim) { this.aimTrim = 0; this.updateHud(); }
       this.schedulePrediction();
     }
 
     setSpin(x, y) {
-      this.tipX = clamp(x, -0.9, 0.9); this.tipY = clamp(y, -0.9, 0.9);
+      let tipX = clamp(x, -0.9, 0.9), tipY = clamp(y, -0.9, 0.9);
+      const length = Math.hypot(tipX, tipY);
+      if (length > 0.9) { tipX *= 0.9 / length; tipY *= 0.9 / length; }
+      this.tipX = tipX; this.tipY = tipY;
       this.updateSpinUI(); this.schedulePrediction();
       $$('.presets button').forEach((item) => item.classList.remove('active'));
+    }
+
+    rotateAim(degrees) {
+      const radians = degrees * Math.PI / 180;
+      const c = Math.cos(radians), s = Math.sin(radians);
+      const d = this.aimDirection;
+      // Positive degrees swing the aim toward the shooter's right.
+      this.aimDirection = V2.normalize({ x: d.x * c - d.z * s, z: d.x * s + d.z * c });
+      this.aimTrim += degrees;
+      this.updateHud();
+      this.schedulePrediction();
+    }
+
+    applyKeyControls(dt) {
+      if (!this.keys.size) return;
+      const has = (key) => this.keys.has(key);
+      const dTipX = (has('d') ? 1 : 0) - (has('a') ? 1 : 0);
+      const dTipY = (has('w') ? 1 : 0) - (has('s') ? 1 : 0);
+      const dPower = (has('e') ? 1 : 0) - (has('q') ? 1 : 0);
+      const dTrim = (has('c') ? 1 : 0) - (has('z') ? 1 : 0);
+      if (dTipX || dTipY) this.setSpin(this.tipX + dTipX * TIP_RATE * dt, this.tipY + dTipY * TIP_RATE * dt);
+      if (dPower) {
+        this.power = clamp(this.power + dPower * POWER_RATE * dt, 0.03, 1);
+        this.updatePowerUI(); this.schedulePrediction();
+      }
+      if (dTrim) this.rotateAim(dTrim * TRIM_RATE * dt);
     }
 
     speedFromPower() { return 0.18 + 6.15 * Math.pow(this.power, 1.34); }
@@ -565,13 +661,12 @@
       this.world.setCueType($('#cueType').value);
       this.world.setTipType($('#tipType').value);
       this.world.setClothPreset($('#clothPreset').value);
-      this.world.onEvent((event) => this.handlePhysicsEvent(event));
       this.renderer.setTable(this.world.table);
 
       const place = (ball, position) => {
         ball.pos = { ...position }; ball.vel = { x: 0, z: 0 }; ball.omega = { x: 0, y: 0, z: 0 };
         ball.rotation = [0, 0, 0, 1]; ball.pocketed = false; ball.pocketId = null;
-        ball.sinkTime = 0; ball.sinkDepth = 0; ball.sinkTarget = null; ball.swerve = 0; ball.lastSpeed = 0; ball.state = 'stationary';
+        ball.sinkTime = 0; ball.sinkDepth = 0; ball.sinkTarget = null; ball.lastSpeed = 0; ball.state = 'stationary';
       };
       this.world.balls.forEach((ball) => {
         ball.pocketed = true; ball.pocketId = 'drill'; ball.sinkTime = 1; ball.sinkDepth = ball.radius * 3.2; ball.sinkTarget = null;
@@ -617,7 +712,6 @@
       this.activeDrill = null;
       $$('[data-drill]').forEach((button) => button.classList.remove('active'));
       this.world.setMode(mode);
-      this.world.onEvent((event) => this.handlePhysicsEvent(event));
       this.renderer.setTable(this.world.table);
       this.rule = this.createRuleState(mode);
       this.shotNumber = 1; this.undoStack.length = 0; this.actualTrails.clear(); this.effects.length = 0;
@@ -632,7 +726,6 @@
       this.activeDrill = null;
       $$('[data-drill]').forEach((button) => button.classList.remove('active'));
       this.world.reset(mode);
-      this.world.onEvent((event) => this.handlePhysicsEvent(event));
       this.world.setClothPreset($('#clothPreset').value);
       this.renderer.setTable(this.world.table);
       this.rule = this.createRuleState(mode); this.shotNumber = 1;
@@ -706,6 +799,7 @@
     frame(time) {
       const rawDelta = Math.min(0.05, (time - this.lastFrameTime) / 1000 || 0);
       this.lastFrameTime = time;
+      this.applyKeyControls(rawDelta);
       const timeScale = this.slowMotion ? 0.5 : 1;
       if (!this.paused) {
         this.accumulator += rawDelta * timeScale;
@@ -730,6 +824,8 @@
         aimDirection: this.aimDirection,
         elevation: this.elevation,
         pullback: this.pullback,
+        tipX: this.tipX,
+        tipY: this.tipY,
       });
       this.drawGuides(time);
       this.updateLiveTelemetry();
@@ -789,17 +885,6 @@
       for (let i = 1; i < 4; i += 1) {
         const z = -t.height / 2 + t.height * i / 4;
         this.screenLine(ctx, { x: -t.width / 2, z }, { x: t.width / 2, z });
-      }
-      if (this.world.mode === 'snooker') {
-        ctx.strokeStyle = 'rgba(228, 242, 234, .22)'; ctx.lineWidth = 0.8;
-        const baulkX = -0.89, dRadius = 0.292;
-        this.screenLine(ctx, { x: baulkX, z: -t.height / 2 }, { x: baulkX, z: t.height / 2 });
-        const dPath = [];
-        for (let i = 0; i <= 40; i += 1) {
-          const angle = Math.PI / 2 + i / 40 * Math.PI;
-          dPath.push({ x: baulkX + Math.cos(angle) * dRadius, z: Math.sin(angle) * dRadius });
-        }
-        this.drawWorldPath(ctx, dPath);
       }
       ctx.fillStyle = 'rgba(203, 242, 228, .18)';
       for (let i = 1; i < 8; i += 1) {
@@ -1012,6 +1097,32 @@
 
     updateElevationUI() {
       $('#elevationSlider').value = this.elevation; $('#elevationValue').textContent = `${this.elevation}°`; $('#elevationFill').style.width = `${this.elevation / 35 * 100}%`;
+      this.updateHud();
+    }
+
+    updateHud() {
+      const marker = $('#hudMarker');
+      if (!marker || !this.world) return;
+      // Ball face: ±1 tip offset maps to the drawn ball radius.
+      marker.style.left = `${50 + this.tipX * 50}%`;
+      marker.style.top = `${50 - this.tipY * 50}%`;
+      const impact = this.lastImpactMetrics || this.world.cueImpactMetrics(this.shotOptions());
+      const safe = $('#hudSafe');
+      safe.style.width = `${impact.safeOffset * 100}%`;
+      safe.style.height = `${impact.safeOffset * 100}%`;
+      marker.classList.toggle('warning', impact.miscueMargin < 0.035);
+      $('#hudPowerBar').style.width = `${Math.round(this.power * 100)}%`;
+      $('#hudPower').textContent = `${Math.round(this.power * 100)}%`;
+      const describe = (value, negative, positive) => {
+        const pct = Math.round(Math.abs(value) * 100);
+        return pct < 2 ? null : `${value > 0 ? positive : negative} ${pct}%`;
+      };
+      const parts = [describe(this.tipX, '左', '右'), describe(this.tipY, '低', '高')].filter(Boolean);
+      $('#hudTip').textContent = parts.length ? parts.join(' · ') : '中心';
+      const trim = $('#hudTrim');
+      trim.textContent = `${this.aimTrim > 0 ? '右 +' : this.aimTrim < 0 ? '左 −' : ''}${Math.abs(this.aimTrim).toFixed(2)}°`;
+      trim.classList.toggle('hot', Math.abs(this.aimTrim) > 0.005);
+      $('#hudSpeed').textContent = `${this.elevation}° · ${impact.horizontalSpeed.toFixed(1)} m/s`;
     }
 
     updateSpinUI() {
@@ -1021,10 +1132,12 @@
       $('#spinYValue').textContent = `${this.tipY >= 0 ? '+' : ''}${Math.round(this.tipY * 100)}%`;
       if (!this.world) return;
       const impact = this.world.cueImpactMetrics(this.shotOptions());
+      this.lastImpactMetrics = impact;
       $('#spinRpmValue').textContent = `${Math.round(Math.abs(impact.omega.y) * 60 / (2 * Math.PI))} rpm`;
       const allowance = impact.aimAllowancePerMetre * 1000;
       $('#spinAllowanceValue').textContent = allowance < 0.05 ? '0 mm/m' : `${impact.tipX > 0 ? '向右' : '向左'} ${allowance.toFixed(1)} mm/m`;
       marker.classList.toggle('warning', impact.miscueMargin < 0.035);
+      this.updateHud();
     }
 
     updateEquipmentHint() {
@@ -1036,6 +1149,7 @@
 
     updateMotionUI(moving) {
       $('#motionBadge').textContent = moving ? '运动中' : '静止'; $('#motionBadge').classList.toggle('moving', moving);
+      $('#keyHud').classList.toggle('dimmed', moving);
       $('.stage-status').classList.toggle('busy', moving);
       $('#statusEyebrow').textContent = moving ? 'SIMULATING · 物理解算中' : 'READY · 准备击球';
       $('#statusText').textContent = moving ? '观察旋转、碰撞与走位' : this.activeDrill ? '实验球位已固定；打一杆后撤销可做对照' : '移动指针瞄准，向后拖动击球';

@@ -246,4 +246,95 @@ function lateralAtOnePointTwoMetres(elevation) {
   }
 }
 
+// Squirt must match the rigid-impulse end-mass model: roughly 1–3° at half-tip
+// English for a low-deflection cue, and the aim allowance readout follows tan α.
+{
+  const world = new PhysicsWorld('chineseEight', { silent: true });
+  const impact = world.cueImpactMetrics({ direction: { x: 1, z: 0 }, speed: 3, tipX: 0.5, tipY: 0, elevation: 0 });
+  const degrees = Math.abs(impact.squirt) * 180 / Math.PI;
+  assert.ok(degrees > 0.9 && degrees < 3.2, `unphysical squirt magnitude ${degrees.toFixed(2)}°`);
+  const allowance = impact.aimAllowancePerMetre * 1000;
+  assert.ok(allowance > 14 && allowance < 60, `unphysical aim allowance ${allowance.toFixed(1)} mm/m`);
+  const slow = world.cueImpactMetrics({ direction: { x: 1, z: 0 }, speed: 1, tipX: 0.5, tipY: 0, elevation: 0 });
+  assert.ok(Math.abs(slow.squirt - impact.squirt) < 0.002, 'squirt should be nearly speed-independent');
+}
+
+// Elevating the cue drives part of the impulse into the slate: the surviving
+// horizontal speed scales with cos(elevation) while spin is kept in full.
+{
+  const world = new PhysicsWorld('chineseEight', { silent: true });
+  const options = { direction: { x: 1, z: 0 }, speed: 3, tipX: 0, tipY: -0.5 };
+  const flat = world.cueImpactMetrics({ ...options, elevation: 0 });
+  const steep = world.cueImpactMetrics({ ...options, elevation: 30 });
+  const ratio = steep.horizontalSpeed / flat.horizontalSpeed;
+  assert.ok(Math.abs(ratio - Math.cos(30 * Math.PI / 180)) < 0.02, `elevation speed ratio ${ratio.toFixed(3)}`);
+  assert.ok(Math.abs(steep.omega.z - flat.omega.z) / Math.abs(flat.omega.z) < 0.02,
+    'draw spin should not lose a cos(elevation) factor');
+}
+
+// Ball-ball throw rig: drive the cue ball into a straight or cut contact with a
+// controlled pre-impact state, then read the object ball's departure angle.
+function throwRig({ objectZ = 0, sideSpin = 0, roll = 0, speed = 1.5 }) {
+  const world = new PhysicsWorld('chineseEight', { silent: true });
+  const cue = world.getCueBall();
+  const object = world.getBall('1');
+  world.balls = [cue, object];
+  const R = cue.radius;
+  object.pos = { x: 0, z: objectZ };
+  cue.pos = { x: -(2 * R + 0.0008), z: 0 };
+  cue.vel = { x: speed, z: 0 };
+  cue.omega = { x: 0, y: sideSpin, z: roll * -speed / R };
+  const energyBefore = world.totalEnergy();
+  const contactNormal = (() => {
+    // Normal direction at the moment the gap closes, from the aim geometry.
+    const dz = objectZ / (2 * R);
+    return { x: Math.sqrt(Math.max(0, 1 - dz * dz)), z: dz };
+  })();
+  for (let i = 0; i < 60 && Math.hypot(object.vel.x, object.vel.z) < 0.02; i += 1) world.step(1 / 300);
+  assert.ok(Math.hypot(object.vel.x, object.vel.z) > 0.02, 'throw rig failed to reach contact');
+  const departure = Math.atan2(object.vel.z, object.vel.x);
+  const lineAngle = Math.atan2(contactNormal.z, contactNormal.x);
+  return {
+    world, cue, object,
+    throwDegrees: (departure - lineAngle) * 180 / Math.PI,
+    energyBefore, energyAfter: world.totalEnergy(),
+  };
+}
+
+// Left English throws the object ball to the shooter's right (and vice versa),
+// soft contact throws more than firm contact, and no collision creates energy.
+{
+  const left = throwRig({ sideSpin: -30 });
+  const right = throwRig({ sideSpin: 30 });
+  assert.ok(left.throwDegrees > 0.8 && left.throwDegrees < 7, `left-English throw ${left.throwDegrees.toFixed(2)}°`);
+  assert.ok(right.throwDegrees < -0.8 && right.throwDegrees > -7, `right-English throw ${right.throwDegrees.toFixed(2)}°`);
+  const soft = throwRig({ sideSpin: 12, speed: 0.7 });
+  const firm = throwRig({ sideSpin: 12 * (3.5 / 0.7), speed: 3.5 });
+  assert.ok(soft.throwDegrees < firm.throwDegrees - 0.35,
+    `soft shots should throw more: soft ${soft.throwDegrees.toFixed(2)}° vs firm ${firm.throwDegrees.toFixed(2)}°`);
+  for (const rig of [left, right, soft, firm]) {
+    assert.ok(rig.energyAfter <= rig.energyBefore + 1e-9, 'ball-ball impact created energy');
+  }
+}
+
+// On the same half-ball cut, a stun (sliding) cue ball throws the object ball
+// further off the impact line than a rolling one: vertical rubbing from roll
+// tilts the slip direction and eats part of the friction budget.
+{
+  const R = new PhysicsWorld('chineseEight', { silent: true }).params.radius;
+  const stun = throwRig({ objectZ: R, roll: 0 });
+  const rolling = throwRig({ objectZ: R, roll: 1 });
+  assert.ok(Math.abs(stun.throwDegrees) > Math.abs(rolling.throwDegrees) + 0.2,
+    `stun throw ${stun.throwDegrees.toFixed(2)}° should exceed rolling throw ${rolling.throwDegrees.toFixed(2)}°`);
+}
+
+// Spin transfer works like gears: a rolling (follow) cue ball leaves the object
+// ball with a small opposite (draw) component, not with follow.
+{
+  const rig = throwRig({ roll: 1 });
+  const cueRollBefore = -1.5 / rig.cue.radius;
+  assert.ok(rig.object.omega.z > 0.4, `follow should transfer as draw, got ω_z=${rig.object.omega.z.toFixed(2)}`);
+  assert.ok(Math.abs(rig.object.omega.z) < 0.35 * Math.abs(cueRollBefore), 'transferred spin should stay small');
+}
+
 console.log('CueLab physics smoke tests passed.');

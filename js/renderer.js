@@ -103,6 +103,9 @@
         float edgeDistance = min(uTableHalfSize.x - abs(vWorldPosition.x), uTableHalfSize.y - abs(vWorldPosition.z));
         float railOcclusion = smoothstep(-0.008, 0.105, edgeDistance);
         base *= mix(0.76, 1.0, railOcclusion);
+        // The light boxes pool their light toward the centre of the cloth.
+        vec2 q = vWorldPosition.xz / uTableHalfSize;
+        base *= 1.0 - 0.13 * smoothstep(0.42, 1.4, length(q));
         diffuse *= 0.74;
         specular = pow(max(dot(n, normalize(overheadDir + viewDir)), 0.0), 24.0) * 0.025;
       } else if (uMaterial == 2) {
@@ -122,6 +125,15 @@
         specular += pow(max(dot(n, normalize(overheadDir + viewDir)), 0.0), 180.0) * 0.78;
         specular += pow(max(dot(n, normalize(fillDir + viewDir)), 0.0), 72.0) * 0.16;
         rim = pow(1.0 - max(dot(n, viewDir), 0.0), 3.0) * 0.12;
+      } else if (uMaterial == 6) {
+        // Satin cue lacquer: lifted ambient so side-facing cylinders stay warm
+        // under a mostly-overhead lighting rig.
+        hemisphere += 0.26;
+        diffuse = diffuse * 0.9 + 0.11;
+        float lacquer = sin(vWorldPosition.x * 210.0 + vWorldPosition.z * 170.0) * 0.012;
+        base *= 1.0 + lacquer;
+        specular = pow(max(dot(n, normalize(overheadDir + viewDir)), 0.0), 64.0) * 0.34;
+        specular += pow(max(dot(n, normalize(lightDir + viewDir)), 0.0), 26.0) * 0.10;
       }
       vec3 lit = base * (hemisphere + diffuse) + vec3(specular) + base * rim;
       float vignette = 1.0 - clamp(length(vWorldPosition.xz) * 0.008, 0.0, 0.08);
@@ -205,13 +217,15 @@
     return { positions, normals, uvs, indices };
   }
 
-  function cylinderGeometry(segments = 40) {
+  // Straight cylinders and truncated cones share one generator: the top ring
+  // (+Y) uses topRadius so a cone mesh can be scaled by its tip radius alone.
+  function cylinderGeometry(segments = 40, topRadius = 1, bottomRadius = 1) {
     const positions = [], normals = [], uvs = [], indices = [];
     const topCenter = positions.length / 3;
     positions.push(0, 1, 0); normals.push(0, 1, 0); uvs.push(0.5, 0.5);
     for (let i = 0; i <= segments; i += 1) {
       const angle = i / segments * Math.PI * 2, x = Math.cos(angle), z = Math.sin(angle);
-      positions.push(x, 1, z); normals.push(0, 1, 0); uvs.push(x * 0.5 + 0.5, z * 0.5 + 0.5);
+      positions.push(x * topRadius, 1, z * topRadius); normals.push(0, 1, 0); uvs.push(x * 0.5 + 0.5, z * 0.5 + 0.5);
     }
     for (let i = 0; i < segments; i += 1) indices.push(topCenter, topCenter + i + 2, topCenter + i + 1);
 
@@ -219,18 +233,55 @@
     positions.push(0, -1, 0); normals.push(0, -1, 0); uvs.push(0.5, 0.5);
     for (let i = 0; i <= segments; i += 1) {
       const angle = i / segments * Math.PI * 2, x = Math.cos(angle), z = Math.sin(angle);
-      positions.push(x, -1, z); normals.push(0, -1, 0); uvs.push(x * 0.5 + 0.5, z * 0.5 + 0.5);
+      positions.push(x * bottomRadius, -1, z * bottomRadius); normals.push(0, -1, 0); uvs.push(x * 0.5 + 0.5, z * 0.5 + 0.5);
     }
     for (let i = 0; i < segments; i += 1) indices.push(bottomCenter, bottomCenter + i + 1, bottomCenter + i + 2);
 
+    const slopeY = (bottomRadius - topRadius) / 2;
     for (let i = 0; i < segments; i += 1) {
       const a = i / segments * Math.PI * 2, b = (i + 1) / segments * Math.PI * 2;
       const x0 = Math.cos(a), z0 = Math.sin(a), x1 = Math.cos(b), z1 = Math.sin(b);
       const base = positions.length / 3;
-      positions.push(x0, -1, z0, x0, 1, z0, x1, 1, z1, x1, -1, z1);
-      normals.push(x0, 0, z0, x0, 0, z0, x1, 0, z1, x1, 0, z1);
+      positions.push(
+        x0 * bottomRadius, -1, z0 * bottomRadius, x0 * topRadius, 1, z0 * topRadius,
+        x1 * topRadius, 1, z1 * topRadius, x1 * bottomRadius, -1, z1 * bottomRadius,
+      );
+      const push = (x, z) => {
+        const len = Math.hypot(x, slopeY, z) || 1;
+        normals.push(x / len, slopeY / len, z / len);
+      };
+      push(x0, z0); push(x0, z0); push(x1, z1); push(x1, z1);
       uvs.push(0, 0, 0, 1, 1, 1, 1, 0);
       indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+    }
+    return { positions, normals, uvs, indices };
+  }
+
+  // Flat XZ pie/annulus sector, +Y normal, bisector along +X: pocket plates,
+  // pocket holes and the snooker D arc all come from this one generator.
+  function sectorGeometry(segments, sweep, innerRatio = 0) {
+    const positions = [], normals = [], uvs = [], indices = [];
+    const start = -sweep / 2;
+    if (innerRatio <= 0) {
+      positions.push(0, 0, 0); normals.push(0, 1, 0); uvs.push(0.5, 0.5);
+      for (let i = 0; i <= segments; i += 1) {
+        const angle = start + i / segments * sweep;
+        const x = Math.cos(angle), z = Math.sin(angle);
+        positions.push(x, 0, z); normals.push(0, 1, 0); uvs.push(x * 0.5 + 0.5, z * 0.5 + 0.5);
+      }
+      for (let i = 1; i <= segments; i += 1) indices.push(0, i + 1, i);
+      return { positions, normals, uvs, indices };
+    }
+    for (let i = 0; i <= segments; i += 1) {
+      const angle = start + i / segments * sweep;
+      const x = Math.cos(angle), z = Math.sin(angle);
+      positions.push(x * innerRatio, 0, z * innerRatio, x, 0, z);
+      normals.push(0, 1, 0, 0, 1, 0);
+      uvs.push(x * innerRatio * 0.5 + 0.5, z * innerRatio * 0.5 + 0.5, x * 0.5 + 0.5, z * 0.5 + 0.5);
+    }
+    for (let i = 0; i < segments; i += 1) {
+      const a = i * 2;
+      indices.push(a, a + 3, a + 1, a, a + 2, a + 3);
     }
     return { positions, normals, uvs, indices };
   }
@@ -302,21 +353,10 @@
     return { vao, count: geometry.indices.length };
   }
 
-  function cueModel(position, direction, length, thickness, elevation, offset = 0) {
-    const c = Math.cos(elevation), s = Math.sin(elevation);
-    const fx = direction.x * c, fy = -s, fz = direction.z * c;
-    const ux = direction.x * s, uy = c, uz = direction.z * s;
-    const sx = -direction.z, sy = 0, sz = direction.x;
-    const centreDistance = position.radius + 0.010 + offset + length / 2 * c;
-    const px = position.x - direction.x * centreDistance;
-    const pz = position.z - direction.z * centreDistance;
-    const py = position.radius + 0.012 + (offset + length / 2) * s;
-    return new Float32Array([
-      fx * length / 2, fy * length / 2, fz * length / 2, 0,
-      ux * thickness, uy * thickness, uz * thickness, 0,
-      sx * thickness, sy * thickness, sz * thickness, 0,
-      px, py, pz, 1,
-    ]);
+  function yawQuat(direction) {
+    // Rotation about +Y taking the mesh's +X bisector to `direction` (XZ unit).
+    const angle = Math.atan2(-direction.z, direction.x);
+    return [0, Math.sin(angle / 2), 0, Math.cos(angle / 2)];
   }
 
   class BilliardsRenderer {
@@ -341,6 +381,14 @@
         sphere: createMesh(gl, sphereGeometry(30, 44)),
         circle: createMesh(gl, circleGeometry()),
         cylinder: createMesh(gl, cylinderGeometry()),
+        cueShaft: createMesh(gl, cylinderGeometry(24, 1, 1.95)),
+        cueButt: createMesh(gl, cylinderGeometry(20, 1, 1.42)),
+        leg: createMesh(gl, cylinderGeometry(22, 1, 0.80)),
+        cornerHole: createMesh(gl, sectorGeometry(40, Math.PI * 1.48)),
+        sideHole: createMesh(gl, sectorGeometry(32, Math.PI * 1.06)),
+        cornerPlate: createMesh(gl, sectorGeometry(40, Math.PI * 1.48, 0.74)),
+        sidePlate: createMesh(gl, sectorGeometry(32, Math.PI * 1.06, 0.74)),
+        arcLine: createMesh(gl, sectorGeometry(48, Math.PI, 0.9925)),
       };
       this.textures = new Map();
       this.anisotropy = gl.getExtension('EXT_texture_filter_anisotropic')
@@ -417,17 +465,23 @@
         view = Mat4.lookAt(this.cameraPosition, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: -1 });
       } else {
         const tableScale = this.table.width;
-        this.cameraPosition = { x: -tableScale * 0.03, y: tableScale * 0.90 * this.zoom, z: tableScale * 0.85 * this.zoom };
-        projection = Mat4.perspective(38 * Math.PI / 180, aspect, 0.05, 15);
-        view = Mat4.lookAt(this.cameraPosition, { x: 0, y: -0.015, z: 0 }, { x: 0, y: 1, z: 0 });
+        // Wider stages sit closer to the broadcast angle; narrow ones back off
+        // so the full table always fits.
+        const fit = clamp(2.55 / Math.max(aspect, 0.8), 1, 1.9);
+        this.cameraPosition = {
+          x: -tableScale * 0.02,
+          y: tableScale * 0.70 * fit * this.zoom,
+          z: tableScale * 0.83 * fit * this.zoom,
+        };
+        projection = Mat4.perspective(36 * Math.PI / 180, aspect, 0.05, 15);
+        view = Mat4.lookAt(this.cameraPosition, { x: 0, y: -0.02, z: tableScale * 0.075 }, { x: 0, y: 1, z: 0 });
       }
       this.viewProjection = Mat4.multiply(projection, view);
     }
 
     render(world, options = {}) {
       this.resize();
-      if (this.table !== world.table) this.table = world.table;
-      this.updateCamera();
+      if (this.table !== world.table) { this.table = world.table; this.updateCamera(); }
       const gl = this.gl;
       gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
       gl.useProgram(this.program);
@@ -440,92 +494,154 @@
       this.drawTable(world);
       this.drawShadows(world);
       this.drawBalls(world);
-      if (options.showCue) this.drawCue(world, options.aimDirection, options.elevation || 0, options.pullback || 0);
+      if (options.showCue) {
+        this.drawCue(world, options.aimDirection, options.elevation || 0, options.pullback || 0, options.tipX || 0, options.tipY || 0);
+      }
     }
 
     drawEnvironment(world) {
-      const scale = world.table.width;
-      this.draw('cube', Mat4.translationScale({ x: 0, y: -0.18, z: 0 }, { x: scale * 1.15, y: 0.08, z: scale * 0.63 }), '#07100e', 3);
+      const t = world.table;
+      const W = t.width, H = t.height, rail = t.railWidth;
+      const chinese = t.style === 'chinese';
+      const woodTexture = this.getMaterialTexture('wood');
+      const metalTexture = this.getMaterialTexture('metal');
+      const carpetTexture = this.getMaterialTexture('rubber');
+      const floorY = -0.84;
+      const apron = chinese ? '#241610' : world.mode === 'snooker' ? '#1d120b' : '#20130c';
+      const gold = '#a8834b';
+
+      this.draw('cube', Mat4.translationScale({ x: 0, y: floorY - 0.02, z: 0 }, { x: W * 1.85, y: 0.02, z: W * 1.05 }), '#101214', 4, 1, carpetTexture, 2, { x: 16, y: 10 });
+      this.gl.depthMask(false);
+      this.draw('circle', Mat4.translationScale({ x: 0, y: floorY + 0.004, z: 0 }, { x: W * 0.80, y: 1, z: H * 1.10 }), '#000000', 3, 0.26);
+      this.draw('circle', Mat4.translationScale({ x: 0, y: floorY + 0.0048, z: 0 }, { x: W * 0.58, y: 1, z: H * 0.78 }), '#000000', 3, 0.26);
+      this.gl.depthMask(true);
+
+      // Cabinet body below the rails, then a stepped-in lower chassis.
+      this.draw('cube', Mat4.translationScale({ x: 0, y: -0.114, z: 0 }, { x: W / 2 + rail * 0.82, y: 0.078, z: H / 2 + rail * 0.82 }), apron, 2, 1, woodTexture, 2, { x: 7, y: 1.4 });
+      this.draw('cube', Mat4.translationScale({ x: 0, y: -0.30, z: 0 }, { x: W / 2 + rail * 0.28, y: 0.115, z: H / 2 + rail * 0.28 }), '#170e08', 2, 1, woodTexture, 2, { x: 6, y: 1.6 });
+      if (chinese) {
+        const trimX = W / 2 + rail * 0.82, trimZ = H / 2 + rail * 0.82;
+        this.draw('cube', Mat4.translationScale({ x: 0, y: -0.041, z: trimZ }, { x: trimX + 0.004, y: 0.0048, z: 0.0042 }), gold, 5, 1, metalTexture, 2, { x: 9, y: 1 });
+        this.draw('cube', Mat4.translationScale({ x: 0, y: -0.041, z: -trimZ }, { x: trimX + 0.004, y: 0.0048, z: 0.0042 }), gold, 5, 1, metalTexture, 2, { x: 9, y: 1 });
+        this.draw('cube', Mat4.translationScale({ x: trimX, y: -0.041, z: 0 }, { x: 0.0042, y: 0.0048, z: trimZ + 0.004 }), gold, 5, 1, metalTexture, 2, { x: 2, y: 7 });
+        this.draw('cube', Mat4.translationScale({ x: -trimX, y: -0.041, z: 0 }, { x: 0.0042, y: 0.0048, z: trimZ + 0.004 }), gold, 5, 1, metalTexture, 2, { x: 2, y: 7 });
+      }
+
+      // The Joy signature: tapered golden legs near the corners.
+      const legColor = chinese ? '#9c7a40' : '#3a2517';
+      const legX = W / 2 - 0.24, legZ = H / 2 - 0.15;
+      [-1, 1].forEach((sx) => [-1, 1].forEach((sz) => {
+        const x = sx * legX, z = sz * legZ;
+        this.draw('leg', Mat4.translationScale({ x, y: -0.585, z }, { x: 0.078, y: 0.275, z: 0.078 }), legColor, chinese ? 5 : 2, 1, chinese ? metalTexture : woodTexture, 2, { x: 2, y: 3 });
+        this.draw('cylinder', Mat4.translationScale({ x, y: -0.845, z }, { x: 0.070, y: 0.014, z: 0.070 }), '#14100c', 4);
+      }));
     }
 
     drawTable(world) {
       const t = world.table;
       const W = t.width, H = t.height, rail = t.railWidth;
       const chinese = t.style === 'chinese';
-      const wood = world.mode === 'snooker' ? '#3d2518' : chinese ? '#4a301d' : '#4b2b1a';
-      const woodEdge = chinese ? '#1f1710' : '#25170f';
-      const cloth = world.mode === 'snooker' ? '#176c48' : chinese ? '#126b49' : '#0c7758';
-      const cushion = world.mode === 'snooker' ? '#155f40' : chinese ? '#0d593e' : '#096548';
-      const cushionTop = t.cushionTopHeight || 0.045;
-      const cushionHalfDepth = 0.032;
-      const visibleCushionDepth = 0.055;
-      const woodHalfWidth = (rail - visibleCushionDepth) / 2;
-      const woodOffset = (rail + visibleCushionDepth) / 2;
+      const snooker = world.mode === 'snooker';
+      const wood = snooker ? '#452a18' : chinese ? '#5a3a21' : '#4f2e1b';
+      const cloth = snooker ? '#1d7f4c' : chinese ? '#177a4e' : '#12775a';
+      const cushion = snooker ? '#186f42' : chinese ? '#136b45' : '#0e684d';
+      const plateColor = snooker ? '#2b1d13' : chinese ? '#9c7d49' : '#231910';
+      const cushionTop = t.cushionTopHeight || 0.042;
+      const railTop = cushionTop + 0.017;
+      const railBottom = -0.036;
+      const woodInner = 0.056;
       const clothTexture = this.getMaterialTexture('cloth');
       const woodTexture = this.getMaterialTexture('wood');
       const rubberTexture = this.getMaterialTexture('rubber');
       const metalTexture = this.getMaterialTexture('metal');
 
-      // Keep the structural slate top below the cloth mesh to avoid coplanar depth fighting.
-      this.draw('cube', Mat4.translationScale({ x: 0, y: -0.096, z: 0 }, { x: W / 2 + rail * 1.15, y: 0.064, z: H / 2 + rail * 1.15 }), woodEdge, 2, 1, woodTexture, 2, { x: 5, y: 2 });
-      this.draw('cube', Mat4.translationScale({ x: 0, y: -0.023, z: 0 }, { x: W / 2, y: 0.023, z: H / 2 }), cloth, 1, 1, clothTexture, 2, { x: 8, y: 4 });
+      // Cloth bed extends slightly under the cushions so no seams show.
+      this.draw('cube', Mat4.translationScale({ x: 0, y: -0.023, z: 0 }, { x: W / 2 + 0.045, y: 0.023, z: H / 2 + 0.045 }), cloth, 1, 1, clothTexture, 2, { x: 9, y: 4.5 });
 
-      this.draw('cube', Mat4.translationScale({ x: 0, y: 0.035, z: H / 2 + woodOffset }, { x: W / 2 + rail, y: 0.056, z: woodHalfWidth }), wood, 2, 1, woodTexture, 2, { x: 6, y: 2 });
-      this.draw('cube', Mat4.translationScale({ x: 0, y: 0.035, z: -H / 2 - woodOffset }, { x: W / 2 + rail, y: 0.056, z: woodHalfWidth }), wood, 2, 1, woodTexture, 2, { x: 6, y: 2 });
-      this.draw('cube', Mat4.translationScale({ x: W / 2 + woodOffset, y: 0.035, z: 0 }, { x: woodHalfWidth, y: 0.056, z: H / 2 }), wood, 2, 1, woodTexture, 2, { x: 3, y: 5 });
-      this.draw('cube', Mat4.translationScale({ x: -W / 2 - woodOffset, y: 0.035, z: 0 }, { x: woodHalfWidth, y: 0.056, z: H / 2 }), wood, 2, 1, woodTexture, 2, { x: 3, y: 5 });
-
-      if (chinese) {
-        const trim = '#9a7744';
-        this.draw('cube', Mat4.translationScale({ x: 0, y: -0.018, z: H / 2 + rail * 1.035 }, { x: W / 2 + rail * 1.08, y: 0.008, z: 0.009 }), trim, 5, 1, metalTexture, 2, { x: 8, y: 1 });
-        this.draw('cube', Mat4.translationScale({ x: 0, y: -0.018, z: -H / 2 - rail * 1.035 }, { x: W / 2 + rail * 1.08, y: 0.008, z: 0.009 }), trim, 5, 1, metalTexture, 2, { x: 8, y: 1 });
-        this.draw('cube', Mat4.translationScale({ x: W / 2 + rail * 1.035, y: -0.018, z: 0 }, { x: 0.009, y: 0.008, z: H / 2 + rail }), trim, 5, 1, metalTexture, 2, { x: 2, y: 6 });
-        this.draw('cube', Mat4.translationScale({ x: -W / 2 - rail * 1.035, y: -0.018, z: 0 }, { x: 0.009, y: 0.008, z: H / 2 + rail }), trim, 5, 1, metalTexture, 2, { x: 2, y: 6 });
+      // Cloth markings: head string + foot spot, or snooker baulk line, D and spots.
+      if (snooker) {
+        const baulkX = -0.89;
+        this.draw('cube', Mat4.translationScale({ x: baulkX, y: 0.0004, z: 0 }, { x: 0.0009, y: 0.0002, z: H / 2 * 0.995 }), '#e6f2ea', 3, 0.15);
+        this.draw('arcLine', Mat4.fromTRS({ x: baulkX, y: 0.0006, z: 0 }, yawQuat({ x: -1, z: 0 }), { x: 0.292, y: 1, z: 0.292 }), '#e6f2ea', 3, 0.15);
+        [[-0.89, -0.292], [-0.89, 0.292], [-0.89, 0], [0, 0], [0.89, 0], [1.43, 0]].forEach(([x, z]) => {
+          this.draw('circle', Mat4.translationScale({ x, y: 0.0006, z }, { x: 0.004, y: 1, z: 0.004 }), '#eef6f0', 3, 0.22);
+        });
+      } else {
+        this.draw('cube', Mat4.translationScale({ x: t.cueStart, y: 0.0004, z: 0 }, { x: 0.0009, y: 0.0002, z: H / 2 * 0.995 }), '#dcebe2', 3, 0.12);
+        this.draw('circle', Mat4.translationScale({ x: t.rackApex, y: 0.0006, z: 0 }, { x: 0.005, y: 1, z: 0.005 }), '#dfeee5', 3, 0.2);
       }
 
+      // Cushion profile: a recessed base with an overhanging nose whose face
+      // sits exactly on the physics contact line, so rebounds match the visual.
       t.cushions.forEach((segment) => {
-        if (segment.axis === 'x') {
-          const length = segment.max - segment.min;
-          this.draw('cube', Mat4.translationScale({
-            x: (segment.min + segment.max) / 2,
-            y: cushionTop / 2,
-            z: segment.value - segment.normal.z * cushionHalfDepth,
-          }, { x: length / 2, y: cushionTop / 2, z: cushionHalfDepth }), cushion, 4, 1, rubberTexture, 2, { x: 5, y: 2 });
-        } else {
-          const length = segment.max - segment.min;
-          this.draw('cube', Mat4.translationScale({
-            x: segment.value - segment.normal.x * cushionHalfDepth,
-            y: cushionTop / 2,
-            z: (segment.min + segment.max) / 2,
-          }, { x: cushionHalfDepth, y: cushionTop / 2, z: length / 2 }), cushion, 4, 1, rubberTexture, 2, { x: 2, y: 5 });
-        }
+        const length = (segment.max - segment.min) / 2;
+        const mid = (segment.min + segment.max) / 2;
+        const noseY = (cushionTop + 0.019) / 2, noseHalf = (cushionTop - 0.019) / 2;
+        const at = (offset, y, halfY, halfDepth) => (segment.axis === 'x'
+          ? [{ x: mid, y, z: segment.value - segment.normal.z * offset }, { x: length, y: halfY, z: halfDepth }]
+          : [{ x: segment.value - segment.normal.x * offset, y, z: mid }, { x: halfDepth, y: halfY, z: length }]);
+        const texScale = segment.axis === 'x' ? { x: 6, y: 1 } : { x: 1, y: 6 };
+        const [nosePos, noseScale] = at(0.030, noseY, noseHalf, 0.030);
+        const [basePos, baseScale] = at(0.034, 0.0115, 0.0115, 0.028);
+        this.draw('cube', Mat4.translationScale(nosePos, noseScale), cushion, 1, 1, clothTexture, 2, texScale);
+        this.draw('cube', Mat4.translationScale(basePos, baseScale), cushion, 1, 1, clothTexture, 2, texScale);
       });
 
       t.jaws.forEach((jaw) => {
         this.draw('cylinder', Mat4.translationScale(
           { x: jaw.x, y: cushionTop / 2, z: jaw.z },
           { x: jaw.radius, y: cushionTop / 2, z: jaw.radius },
-        ), cushion, 4, 1, rubberTexture, 2, { x: 2, y: 2 });
+        ), cushion, 1, 1, clothTexture, 2, { x: 2, y: 2 });
       });
 
+      // Rail caps: long caps run the full width and own the corners; the short
+      // caps butt against them so no coplanar top faces overlap.
+      const woodY = (railTop + railBottom) / 2, woodHalfY = (railTop - railBottom) / 2;
+      const woodMid = (woodInner + rail) / 2, woodHalf = (rail - woodInner) / 2;
+      [-1, 1].forEach((side) => {
+        this.draw('cube', Mat4.translationScale(
+          { x: 0, y: woodY, z: side * (H / 2 + woodMid) },
+          { x: W / 2 + rail, y: woodHalfY, z: woodHalf },
+        ), wood, 2, 1, woodTexture, 2, { x: 9, y: 1 });
+        this.draw('cube', Mat4.translationScale(
+          { x: side * (W / 2 + woodMid), y: woodY, z: 0 },
+          { x: woodHalf, y: woodHalfY, z: H / 2 + woodInner },
+        ), wood, 2, 1, woodTexture, 2, { x: 1, y: 6 });
+      });
+
+      // Pockets: a dark shaft below the slate, then a plate and open hole set
+      // into the rail caps.  Sectors face outward so nothing floats over cloth.
       t.pockets.forEach((pocket) => {
-        const factor = chinese ? 0.86 : pocket.type === 'side' ? 0.94 : 0.86;
-        this.draw('circle', Mat4.translationScale({ x: pocket.x, y: 0.0935, z: pocket.z }, { x: t.pocketRadius * factor, y: 1, z: t.pocketRadius * factor }), chinese ? '#15110b' : '#020806', 3);
-        this.draw('circle', Mat4.translationScale({ x: pocket.x, y: 0.0945, z: pocket.z }, { x: t.pocketRadius * 0.76, y: 1, z: t.pocketRadius * 0.76 }), '#030706', 3);
-        this.draw('circle', Mat4.translationScale({ x: pocket.x, y: 0.0955, z: pocket.z }, { x: t.pocketRadius * 0.50, y: 1, z: t.pocketRadius * 0.50 }), '#000000', 3);
+        const corner = pocket.type === 'corner';
+        const holeR = t.pocketRadius * (corner ? 1.10 : 1.02);
+        const plateR = holeR * 1.32;
+        const spin = yawQuat(pocket.outward);
+        this.draw('cylinder', Mat4.translationScale(
+          { x: pocket.x, y: -0.053, z: pocket.z },
+          { x: holeR * 0.98, y: 0.049, z: holeR * 0.98 },
+        ), '#070404', 4);
+        this.draw(corner ? 'cornerPlate' : 'sidePlate', Mat4.fromTRS(
+          { x: pocket.x, y: railTop + 0.0012, z: pocket.z }, spin, { x: plateR, y: 1, z: plateR },
+        ), plateColor, chinese ? 5 : 4, 1, chinese ? metalTexture : rubberTexture, 2, { x: 2, y: 2 });
+        this.draw(corner ? 'cornerHole' : 'sideHole', Mat4.fromTRS(
+          { x: pocket.x, y: railTop + 0.0022, z: pocket.z }, spin, { x: holeR, y: 1, z: holeR },
+        ), '#040302', 3, 0.985);
       });
 
-      // Rail sights are rendered as inset mother-of-pearl dots.
-      const sightColor = '#b8c9bf';
-      [-0.375, -0.125, 0.125, 0.375].forEach((f) => {
-        const x = W * f;
-        this.draw('circle', Mat4.translationScale({ x, y: 0.0945, z: H / 2 + rail * 0.55 }, { x: 0.007, y: 1, z: 0.007 }), sightColor, 3, 0.7);
-        this.draw('circle', Mat4.translationScale({ x, y: 0.0945, z: -H / 2 - rail * 0.55 }, { x: 0.007, y: 1, z: 0.007 }), sightColor, 3, 0.7);
+      // Mother-of-pearl sights at every eighth (long) and quarter (short) point.
+      const sightColor = chinese ? '#cfc4a4' : '#b8c9bf';
+      const sightRail = woodMid;
+      [-3, -2, -1, 1, 2, 3].forEach((k) => {
+        const x = W * k / 8;
+        [-1, 1].forEach((side) => {
+          this.draw('circle', Mat4.translationScale({ x, y: railTop + 0.0008, z: side * (H / 2 + sightRail) }, { x: 0.0062, y: 1, z: 0.0062 }), sightColor, 3, 0.82);
+        });
       });
-      [-0.25, 0, 0.25].forEach((f) => {
-        const z = H * f;
-        this.draw('circle', Mat4.translationScale({ x: W / 2 + rail * 0.55, y: 0.0945, z }, { x: 0.007, y: 1, z: 0.007 }), sightColor, 3, 0.7);
-        this.draw('circle', Mat4.translationScale({ x: -W / 2 - rail * 0.55, y: 0.0945, z }, { x: 0.007, y: 1, z: 0.007 }), sightColor, 3, 0.7);
+      [-1, 0, 1].forEach((k) => {
+        const z = H * k / 4;
+        [-1, 1].forEach((side) => {
+          this.draw('circle', Mat4.translationScale({ x: side * (W / 2 + sightRail), y: railTop + 0.0008, z }, { x: 0.0062, y: 1, z: 0.0062 }), sightColor, 3, 0.82);
+        });
       });
     }
 
@@ -535,8 +651,9 @@
         if (ball.pocketed && ball.sinkTime > 0.24) continue;
         const fade = ball.pocketed ? Math.max(0, 1 - ball.sinkTime / 0.24) : 1;
         const radius = ball.radius;
-        this.draw('circle', Mat4.translationScale({ x: ball.pos.x + radius * 0.22, y: 0.0025, z: ball.pos.z - radius * 0.20 }, { x: radius * 1.34, y: 1, z: radius * 1.02 }), '#000000', 3, 0.13 * fade);
-        this.draw('circle', Mat4.translationScale({ x: ball.pos.x + radius * 0.08, y: 0.0031, z: ball.pos.z - radius * 0.07 }, { x: radius * 0.92, y: 1, z: radius * 0.72 }), '#000000', 3, 0.25 * fade);
+        this.draw('circle', Mat4.translationScale({ x: ball.pos.x + radius * 0.26, y: 0.0022, z: ball.pos.z - radius * 0.22 }, { x: radius * 1.52, y: 1, z: radius * 1.16 }), '#000000', 3, 0.10 * fade);
+        this.draw('circle', Mat4.translationScale({ x: ball.pos.x + radius * 0.12, y: 0.0028, z: ball.pos.z - radius * 0.10 }, { x: radius * 1.05, y: 1, z: radius * 0.84 }), '#000000', 3, 0.20 * fade);
+        this.draw('circle', Mat4.translationScale({ x: ball.pos.x + radius * 0.04, y: 0.0034, z: ball.pos.z - radius * 0.03 }, { x: radius * 0.64, y: 1, z: radius * 0.55 }), '#000000', 3, 0.26 * fade);
       }
       this.gl.depthMask(true);
     }
@@ -553,21 +670,51 @@
       }
     }
 
-    drawCue(world, direction, elevationDegrees, pullback) {
+    drawCue(world, direction, elevationDegrees, pullback, tipX = 0, tipY = 0) {
       const cue = world.getCueBall();
       if (!cue || cue.pocketed || !direction) return;
+      const spec = world.getCueSpec ? world.getCueSpec() : { shaftRadius: 0.0061, tipDiameter: 0.0115 };
       const elevation = elevationDegrees * Math.PI / 180;
-      const position = { x: cue.pos.x, z: cue.pos.z, radius: cue.radius };
-      const spec = world.getCueSpec ? world.getCueSpec() : { shaftRadius: 0.0068, tipDiameter: 0.0115 };
-      const tip = world.getTipSpec ? world.getTipSpec() : { id: 'medium' };
-      const pull = pullback || 0;
+      const c = Math.cos(elevation), s = Math.sin(elevation);
+      const f = { x: direction.x * c, y: -s, z: direction.z * c };
+      const up = { x: direction.x * s, y: c, z: direction.z * s };
+      const side = { x: -direction.z, y: 0, z: direction.x };
+      const R = cue.radius;
+      // Aim the stick at the actual tip-offset contact point so the selected
+      // English/draw is visible on the table, not just in the panel.
+      const reach = 0.82 * R;
+      const offsetLen = Math.hypot(tipX, tipY) * 0.82;
+      const depth = R * Math.sqrt(Math.max(0.2, 1 - offsetLen * offsetLen));
+      const contact = {
+        x: cue.pos.x + side.x * tipX * reach + up.x * tipY * reach - f.x * depth,
+        y: R + up.y * tipY * reach - f.y * depth,
+        z: cue.pos.z + side.z * tipX * reach + up.z * tipY * reach - f.z * depth,
+      };
       const woodTexture = this.getMaterialTexture('wood');
       const rubberTexture = this.getMaterialTexture('rubber');
-      this.draw('cube', cueModel(position, direction, 0.82, spec.shaftRadius, elevation, pull + 0.047), '#c99b61', 2, 1, woodTexture, 2, { x: 5, y: 1 });
-      this.draw('cube', cueModel(position, direction, 0.21, spec.shaftRadius * 1.17, elevation, pull + 0.657), '#513326', 2, 1, woodTexture, 2, { x: 3, y: 1 });
-      this.draw('cube', cueModel(position, direction, 0.035, spec.tipDiameter * 0.52, elevation, pull + 0.012), '#e8e1cf', 0);
-      const tipColor = tip.id === 'soft' ? '#416f68' : tip.id === 'hard' ? '#234842' : '#32625b';
-      this.draw('cube', cueModel(position, direction, 0.012, spec.tipDiameter * 0.52, elevation, pull), tipColor, 4, 1, rubberTexture, 2, { x: 1, y: 1 });
+      const metalTexture = this.getMaterialTexture('metal');
+      let cursor = 0.005 + (pullback || 0);
+      const segment = (length, radius, mesh, color, material, texture, scale) => {
+        const centre = cursor + length / 2;
+        const m = new Float32Array([
+          side.x * radius, side.y * radius, side.z * radius, 0,
+          f.x * length / 2, f.y * length / 2, f.z * length / 2, 0,
+          up.x * radius, up.y * radius, up.z * radius, 0,
+          contact.x - f.x * centre, contact.y - f.y * centre, contact.z - f.z * centre, 1,
+        ]);
+        this.draw(mesh, m, color, material, 1, texture || null, texture ? 2 : 0, scale || { x: 1, y: 1 });
+        cursor += length;
+      };
+      const tipR = spec.tipDiameter / 2;
+      const tip = world.getTipSpec ? world.getTipSpec() : { id: 'medium' };
+      const tipColor = tip.id === 'soft' ? '#7d5c42' : tip.id === 'hard' ? '#4d3626' : '#6b4c36';
+      segment(0.0075, tipR, 'cylinder', tipColor, 4, rubberTexture, { x: 1, y: 1 });
+      segment(0.020, tipR * 1.02, 'cylinder', '#f3eee1', 6);
+      segment(0.70, tipR * 1.05, 'cueShaft', '#d8ab6d', 6, woodTexture, { x: 4, y: 1 });
+      const jointR = tipR * 1.05 * 1.95;
+      segment(0.011, jointR * 1.02, 'cylinder', '#c8a45c', 5, metalTexture, { x: 2, y: 1 });
+      segment(0.60, jointR, 'cueButt', '#59331c', 6, woodTexture, { x: 4, y: 1 });
+      segment(0.010, jointR * 1.30, 'cylinder', '#191411', 4, rubberTexture, { x: 1, y: 1 });
     }
 
     draw(meshName, model, color, material = 0, opacity = 1, texture = null, textureMode = texture ? 1 : 0, textureScale = { x: 1, y: 1 }) {
