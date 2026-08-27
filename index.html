@@ -117,7 +117,7 @@
               <b id="hudTip">中心</b>
             </div>
             <div class="key-row">
-              <small><kbd>Z</kbd><kbd>C</kbd> 让点微调</small>
+              <small><kbd>Z</kbd><kbd>C</kbd> 让点 <kbd>X</kbd> 复位</small>
               <b id="hudTrim">0.00°</b>
             </div>
             <div class="key-row">
@@ -283,7 +283,7 @@
     </div>
     <div class="dialog-body">
       <div class="help-grid">
-        <article><b>01</b><h3>瞄准与出杆</h3><p>移动鼠标改变方向,<kbd>Z</kbd>/<kbd>C</kbd> 逐帧水平微调(加塞让点专用);按住台面反向拖动松手击球,或 <kbd>Q</kbd>/<kbd>E</kbd> 调力度后按空格。</p></article>
+        <article><b>01</b><h3>瞄准与出杆</h3><p>移动鼠标改变方向,<kbd>Z</kbd>/<kbd>C</kbd> 精细水平微调(加塞让点专用,<kbd>X</kbd> 一键复位,按住 <kbd>Shift</kbd> 加速);按住台面反向拖动松手击球,或 <kbd>Q</kbd>/<kbd>E</kbd> 调力度后按空格。</p></article>
         <article><b>02</b><h3>高低杆与侧塞</h3><p>拖动母球击点,或用 <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 精调;虚线圈是当前皮头的防滑杆安全区。灰线是未补偿瞄向,绿色路线包含球杆偏移与台呢回弯。</p></article>
         <article><b>03</b><h3>读懂辅助线</h3><p>青线是母球数值预演，金线是目标球路径。虚线圆为碰撞瞬间的假想球，白色短线表示切球后的 90° 分离方向。</p></article>
         <article><b>04</b><h3>做对照实验</h3><p>用“一键物理实验”固定球位，只改变击点、力度、皮头或台呢。慢动作对照入射角/反弹角及滑动到滚动的转换。</p></article>
@@ -296,6 +296,8 @@
         <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 微调打点</span>
         <span><kbd>Q</kbd><kbd>E</kbd> 出杆力度</span>
         <span><kbd>Z</kbd><kbd>C</kbd> 水平让点微调</span>
+        <span><kbd>X</kbd> 复位让点</span>
+        <span><kbd>Shift</kbd> 微调加速 ×4</span>
         <span><kbd>Space</kbd> 击球</span><span><kbd>R</kbd> 重新摆球</span><span><kbd>G</kbd> 辅助线</span><span><kbd>M</kbd> 慢动作</span><span><kbd>Esc</kbd> 暂停</span>
       </div>
       <p class="research-credit">参数与模型校核参考 Pooltool（Apache-2.0）、Mathavan 等人的球/库碰撞论文及 Dr. Dave 的技术资料；本项目 WebGL 与物理代码为独立实现。详细来源见 README。</p>

@@ -199,7 +199,11 @@
     for (let lat = 0; lat < latitudes; lat += 1) {
       for (let lon = 0; lon < longitudes; lon += 1) {
         const a = lat * (longitudes + 1) + lon, b = a + longitudes + 1;
-        indices.push(a, b, a + 1, b, b + 1, a + 1);
+        // Counter-clockwise from OUTSIDE the sphere.  The old (a, b, a+1)
+        // order was inverted: back-face culling then showed the far
+        // hemisphere's inner wall, mirroring textures and making every
+        // rolling ball appear to spin backwards.
+        indices.push(a, a + 1, b, b, a + 1, b + 1);
       }
     }
     return { positions, normals, uvs, indices };
@@ -829,5 +833,8 @@
     }
   }
 
-  global.BilliardsRenderer = { BilliardsRenderer };
+  global.BilliardsRenderer = {
+    BilliardsRenderer,
+    geometry: { cubeGeometry, sphereGeometry, circleGeometry, cylinderGeometry, sectorGeometry },
+  };
 })(window);

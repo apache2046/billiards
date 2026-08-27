@@ -7,11 +7,14 @@
 
   // Hold-to-adjust keys are integrated per frame for smooth, fine control:
   // WASD moves the tip contact point, Q/E scales cue speed, Z/C trims the
-  // horizontal aim angle for English (squirt/swerve) compensation practice.
+  // horizontal aim angle for English compensation practice and X resets that
+  // trim.  Rates are deliberately slow — squirt compensation lives in tenths
+  // of a degree — and holding Shift boosts them 4× for coarse moves.
   const ADJUST_KEYS = new Set(['w', 'a', 's', 'd', 'q', 'e', 'z', 'c']);
-  const TIP_RATE = 0.85;      // tip offset (fraction of R) per second
-  const POWER_RATE = 0.5;     // power fraction per second
-  const TRIM_RATE = 1.8;      // aim trim degrees per second
+  const TIP_RATE = 0.32;      // tip offset (fraction of R) per second
+  const POWER_RATE = 0.20;    // power fraction per second
+  const TRIM_RATE = 0.55;     // aim trim degrees per second
+  const SHIFT_BOOST = 4;
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => [...document.querySelectorAll(selector)];
 
@@ -87,6 +90,7 @@
       this.power = 0.62;
       this.elevation = 3;
       this.keys = new Set();
+      this.shiftHeld = false;
       this.aimTrim = 0;
       this.drag = null;
       this.pullback = 0;
@@ -283,6 +287,7 @@
 
       window.addEventListener('keydown', (event) => {
         if (/INPUT|SELECT|TEXTAREA/.test(document.activeElement?.tagName)) return;
+        this.shiftHeld = event.shiftKey;
         if (event.ctrlKey || event.metaKey || event.altKey) return;
         const key = event.key.toLowerCase();
         if (ADJUST_KEYS.has(key) && !$('#helpDialog').open) {
@@ -295,10 +300,14 @@
         else if (key === 'r') this.resetRack();
         else if (key === 'g') this.toggleGuides();
         else if (key === 'm') { $('#slowButton').click(); }
+        else if (key === 'x') this.resetAimTrim();
         else if (event.key === 'Escape' && !$('#helpDialog').open) this.togglePause();
       });
-      window.addEventListener('keyup', (event) => this.keys.delete(event.key.toLowerCase()));
-      window.addEventListener('blur', () => this.keys.clear());
+      window.addEventListener('keyup', (event) => {
+        this.shiftHeld = event.shiftKey;
+        this.keys.delete(event.key.toLowerCase());
+      });
+      window.addEventListener('blur', () => { this.keys.clear(); this.shiftHeld = false; });
       window.addEventListener('resize', () => this.schedulePrediction(true));
     }
 
@@ -400,16 +409,25 @@
     applyKeyControls(dt) {
       if (!this.keys.size) return;
       const has = (key) => this.keys.has(key);
+      const step = dt * (this.shiftHeld ? SHIFT_BOOST : 1);
       const dTipX = (has('d') ? 1 : 0) - (has('a') ? 1 : 0);
       const dTipY = (has('w') ? 1 : 0) - (has('s') ? 1 : 0);
       const dPower = (has('e') ? 1 : 0) - (has('q') ? 1 : 0);
       const dTrim = (has('c') ? 1 : 0) - (has('z') ? 1 : 0);
-      if (dTipX || dTipY) this.setSpin(this.tipX + dTipX * TIP_RATE * dt, this.tipY + dTipY * TIP_RATE * dt);
+      if (dTipX || dTipY) this.setSpin(this.tipX + dTipX * TIP_RATE * step, this.tipY + dTipY * TIP_RATE * step);
       if (dPower) {
-        this.power = clamp(this.power + dPower * POWER_RATE * dt, 0.03, 1);
+        this.power = clamp(this.power + dPower * POWER_RATE * step, 0.03, 1);
         this.updatePowerUI(); this.schedulePrediction();
       }
-      if (dTrim) this.rotateAim(dTrim * TRIM_RATE * dt);
+      if (dTrim) this.rotateAim(dTrim * TRIM_RATE * step);
+    }
+
+    resetAimTrim() {
+      if (!this.aimTrim) { this.toast('当前没有让点微调'); return; }
+      this.rotateAim(-this.aimTrim);
+      this.aimTrim = 0;
+      this.updateHud();
+      this.toast('让点微调已复位');
     }
 
     speedFromPower() { return 0.18 + 6.15 * Math.pow(this.power, 1.34); }

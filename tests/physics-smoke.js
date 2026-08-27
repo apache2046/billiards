@@ -4,8 +4,41 @@ const assert = require('node:assert/strict');
 global.window = global;
 require('../js/math.js');
 require('../js/physics.js');
+require('../js/renderer.js');
 
 const { PhysicsWorld } = global.BilliardsPhysics;
+
+// With gl.cullFace(BACK) and the default CCW front face, every triangle of a
+// closed convex mesh must wind so its geometric normal points outward.  An
+// inverted mesh still "renders", but shows its mirror-image inner wall — on
+// the sphere that made rolling balls appear to spin backwards.
+{
+  const { sphereGeometry, cylinderGeometry, cubeGeometry } = global.BilliardsRenderer.geometry;
+  const check = (name, geometry, centre = [0, 0, 0]) => {
+    const p = geometry.positions, idx = geometry.indices;
+    for (let i = 0; i < idx.length; i += 3) {
+      const [ia, ib, ic] = [idx[i] * 3, idx[i + 1] * 3, idx[i + 2] * 3];
+      const ax = p[ia], ay = p[ia + 1], az = p[ia + 2];
+      const e1 = [p[ib] - ax, p[ib + 1] - ay, p[ib + 2] - az];
+      const e2 = [p[ic] - ax, p[ic + 1] - ay, p[ic + 2] - az];
+      const n = [
+        e1[1] * e2[2] - e1[2] * e2[1],
+        e1[2] * e2[0] - e1[0] * e2[2],
+        e1[0] * e2[1] - e1[1] * e2[0],
+      ];
+      if (n[0] * n[0] + n[1] * n[1] + n[2] * n[2] < 1e-12) continue; // degenerate pole triangle
+      const cx = (ax + p[ib] + p[ic]) / 3 - centre[0];
+      const cy = (ay + p[ib + 1] + p[ic + 1]) / 3 - centre[1];
+      const cz = (az + p[ib + 2] + p[ic + 2]) / 3 - centre[2];
+      const outward = n[0] * cx + n[1] * cy + n[2] * cz;
+      assert.ok(outward > 1e-9, `${name}: triangle ${i / 3} winds inward (would cull the visible side)`);
+    }
+  };
+  check('sphere', sphereGeometry(12, 16));
+  check('cylinder', cylinderGeometry(14));
+  check('tapered cylinder', cylinderGeometry(14, 1, 1.6));
+  check('cube', cubeGeometry());
+}
 
 function assertNoRackOverlap(world) {
   for (let i = 0; i < world.balls.length; i += 1) {
