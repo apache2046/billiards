@@ -9,6 +9,7 @@
     in vec3 aNormal;
     in vec2 aUV;
     uniform mat4 uModel;
+    uniform mat3 uNormalMatrix;
     uniform mat4 uViewProjection;
     out vec3 vWorldPosition;
     out vec3 vNormal;
@@ -16,11 +17,7 @@
     void main() {
       vec4 world = uModel * vec4(aPosition, 1.0);
       vWorldPosition = world.xyz;
-      // Every current primitive is either uniformly scaled (balls), has
-      // axis-aligned face normals (boxes), or equal radial X/Z scale
-      // (cylinders).  Normalizing the model-space transform is therefore exact
-      // here and avoids an inverse matrix for every vertex.
-      vNormal = normalize(mat3(uModel) * aNormal);
+      vNormal = normalize(uNormalMatrix * aNormal);
       vUV = aUV;
       gl_Position = uViewProjection * world;
     }
@@ -160,9 +157,25 @@
     const program = gl.createProgram();
     gl.attachShader(program, compileShader(gl, gl.VERTEX_SHADER, vertexSource));
     gl.attachShader(program, compileShader(gl, gl.FRAGMENT_SHADER, fragmentSource));
+    // Attribute slots must be pinned before the (single) link to take effect.
+    gl.bindAttribLocation(program, 0, 'aPosition');
+    gl.bindAttribLocation(program, 1, 'aNormal');
+    gl.bindAttribLocation(program, 2, 'aUV');
     gl.linkProgram(program);
     if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(`WebGL link error: ${gl.getProgramInfoLog(program)}`);
     return program;
+  }
+
+  // Inverse-transpose of the model matrix's 3x3, via the cofactor matrix (the
+  // det division is dropped because the shader renormalizes).  This keeps
+  // lighting correct for the tapered cone meshes, whose slanted normals a
+  // plain mat3(uModel) would drag toward the axis under anisotropic scale.
+  function normalMatrix(out, m) {
+    const a = m[0], b = m[1], c = m[2], d = m[4], e = m[5], f = m[6], g = m[8], h = m[9], i = m[10];
+    out[0] = e * i - f * h; out[1] = f * g - d * i; out[2] = d * h - e * g;
+    out[3] = c * h - b * i; out[4] = a * i - c * g; out[5] = b * g - a * h;
+    out[6] = b * f - c * e; out[7] = c * d - a * f; out[8] = a * e - b * d;
+    return out;
   }
 
   function cubeGeometry() {
@@ -371,15 +384,11 @@
       const gl = this.gl;
       this.program = createProgram(gl, VERTEX_SHADER, FRAGMENT_SHADER);
       gl.useProgram(this.program);
-      gl.bindAttribLocation(this.program, 0, 'aPosition');
-      gl.bindAttribLocation(this.program, 1, 'aNormal');
-      gl.bindAttribLocation(this.program, 2, 'aUV');
-      // Re-link after deterministic attribute bindings.
-      gl.linkProgram(this.program);
       this.uniforms = {};
-      ['uModel', 'uViewProjection', 'uColor', 'uCameraPosition', 'uTexture', 'uTextureMode', 'uTextureScale', 'uTableHalfSize', 'uMaterial', 'uOpacity'].forEach((name) => {
+      ['uModel', 'uNormalMatrix', 'uViewProjection', 'uColor', 'uCameraPosition', 'uTexture', 'uTextureMode', 'uTextureScale', 'uTableHalfSize', 'uMaterial', 'uOpacity'].forEach((name) => {
         this.uniforms[name] = gl.getUniformLocation(this.program, name);
       });
+      this.normalMatrixScratch = new Float32Array(9);
       this.meshes = {
         cube: createMesh(gl, cubeGeometry()),
         sphere: createMesh(gl, sphereGeometry(30, 44)),
@@ -409,6 +418,7 @@
       this.resolutionScale = this.softwareRenderer ? 0.65 : 1;
       this.cameraMode = 'perspective';
       this.zoom = 1;
+      this.orbit = null; // { yaw, pitch } once the user grabs the view; null = auto framing
       this.viewProjection = Mat4.identity();
       this.cameraPosition = { x: 0, y: 2.2, z: 2.1 };
       this.table = null;
@@ -437,8 +447,40 @@
     }
 
     setZoom(delta) {
-      this.zoom = clamp(this.zoom * delta, 0.72, 1.55);
+      this.zoom = clamp(this.zoom * delta, 0.62, 1.75);
       this.updateCamera();
+    }
+
+    // CAD-style turntable orbit: on the first grab, adopt the current pose so
+    // there is no jump; deltas then steer yaw/pitch around the fixed target.
+    orbitBy(dxPixels, dyPixels) {
+      if (this.cameraMode !== 'perspective' || !this.table) return false;
+      if (!this.orbit) {
+        const tableScale = this.table.width;
+        const target = { x: 0, y: -0.02, z: tableScale * 0.075 };
+        const off = {
+          x: this.cameraPosition.x - target.x,
+          y: this.cameraPosition.y - target.y,
+          z: this.cameraPosition.z - target.z,
+        };
+        const distance = Math.hypot(off.x, off.y, off.z) || 1;
+        this.orbit = {
+          yaw: Math.atan2(off.x, off.z),
+          pitch: Math.asin(clamp(off.y / distance, -1, 1)),
+        };
+      }
+      this.orbit.yaw -= dxPixels * 0.0052;
+      this.orbit.pitch = clamp(this.orbit.pitch + dyPixels * 0.0052, 0.10, 1.50);
+      this.updateCamera();
+      return true;
+    }
+
+    resetOrbit() {
+      const had = Boolean(this.orbit);
+      this.orbit = null;
+      this.zoom = 1;
+      this.updateCamera();
+      return had;
     }
 
     resize() {
@@ -460,8 +502,9 @@
       const aspect = this.cssWidth / this.cssHeight;
       let projection, view;
       if (this.cameraMode === 'top') {
-        const halfX = this.table.width * 0.63 * this.zoom;
-        const halfZ = Math.max(this.table.height * 0.74, halfX / aspect) * this.zoom;
+        const baseHalfX = this.table.width * 0.63;
+        const halfX = baseHalfX * this.zoom;
+        const halfZ = Math.max(this.table.height * 0.74, baseHalfX / aspect) * this.zoom;
         const widthFromHeight = halfZ * aspect;
         const finalHalfX = Math.max(halfX, widthFromHeight);
         projection = Mat4.ortho(-finalHalfX, finalHalfX, -halfZ, halfZ, 0.1, 12);
@@ -472,13 +515,27 @@
         // Wider stages sit closer to the broadcast angle; narrow ones back off
         // so the full table always fits.
         const fit = clamp(2.55 / Math.max(aspect, 0.8), 1, 1.9);
+        const target = { x: 0, y: -0.02, z: tableScale * 0.075 };
+        const base = {
+          x: -tableScale * 0.02 - target.x,
+          y: tableScale * 0.70 * fit * this.zoom - target.y,
+          z: tableScale * 0.83 * fit * this.zoom - target.z,
+        };
+        const distance = Math.hypot(base.x, base.y, base.z);
+        let direction;
+        if (this.orbit) {
+          const cp = Math.cos(this.orbit.pitch);
+          direction = { x: Math.sin(this.orbit.yaw) * cp, y: Math.sin(this.orbit.pitch), z: Math.cos(this.orbit.yaw) * cp };
+        } else {
+          direction = { x: base.x / distance, y: base.y / distance, z: base.z / distance };
+        }
         this.cameraPosition = {
-          x: -tableScale * 0.02,
-          y: tableScale * 0.70 * fit * this.zoom,
-          z: tableScale * 0.83 * fit * this.zoom,
+          x: target.x + direction.x * distance,
+          y: target.y + direction.y * distance,
+          z: target.z + direction.z * distance,
         };
         projection = Mat4.perspective(36 * Math.PI / 180, aspect, 0.05, 15);
-        view = Mat4.lookAt(this.cameraPosition, { x: 0, y: -0.02, z: tableScale * 0.075 }, { x: 0, y: 1, z: 0 });
+        view = Mat4.lookAt(this.cameraPosition, target, { x: 0, y: 1, z: 0 });
       }
       this.viewProjection = Mat4.multiply(projection, view);
     }
@@ -598,6 +655,21 @@
         ), cushion, 1, 1, clothTexture, 2, { x: 2, y: 2 });
       });
 
+      // American-style angled pocket facings: cloth-covered walls whose play
+      // face lies exactly on the physics capsule segment.
+      (t.facings || []).forEach((facing) => {
+        const dx = facing.p1.x - facing.p0.x, dz = facing.p1.z - facing.p0.z;
+        const length = Math.hypot(dx, dz);
+        const direction = { x: dx / length, z: dz / length };
+        const half = 0.0075;
+        const mid = {
+          x: (facing.p0.x + facing.p1.x) / 2 - facing.normal.x * half,
+          y: cushionTop / 2,
+          z: (facing.p0.z + facing.p1.z) / 2 - facing.normal.z * half,
+        };
+        this.draw('cube', Mat4.fromTRS(mid, yawQuat(direction), { x: length / 2, y: cushionTop / 2, z: half }), cushion, 1, 1, clothTexture, 2, { x: 1.5, y: 1 });
+      });
+
       // Rail caps: long caps run the full width and own the corners; the short
       // caps butt against them so no coplanar top faces overlap.
       const woodY = (railTop + railBottom) / 2, woodHalfY = (railTop - railBottom) / 2;
@@ -653,11 +725,15 @@
       this.gl.depthMask(false);
       for (const ball of world.balls) {
         if (ball.pocketed && ball.sinkTime > 0.24) continue;
-        const fade = ball.pocketed ? Math.max(0, 1 - ball.sinkTime / 0.24) : 1;
+        let fade = ball.pocketed ? Math.max(0, 1 - ball.sinkTime / 0.24) : 1;
+        const lift = ball.posY || 0;
+        // An airborne ball throws a wider, weaker shadow.
+        const spread = 1 + lift * 3.2;
+        fade *= Math.max(0.18, 1 - lift * 4.5);
         const radius = ball.radius;
-        this.draw('circle', Mat4.translationScale({ x: ball.pos.x + radius * 0.26, y: 0.0022, z: ball.pos.z - radius * 0.22 }, { x: radius * 1.52, y: 1, z: radius * 1.16 }), '#000000', 3, 0.10 * fade);
-        this.draw('circle', Mat4.translationScale({ x: ball.pos.x + radius * 0.12, y: 0.0028, z: ball.pos.z - radius * 0.10 }, { x: radius * 1.05, y: 1, z: radius * 0.84 }), '#000000', 3, 0.20 * fade);
-        this.draw('circle', Mat4.translationScale({ x: ball.pos.x + radius * 0.04, y: 0.0034, z: ball.pos.z - radius * 0.03 }, { x: radius * 0.64, y: 1, z: radius * 0.55 }), '#000000', 3, 0.26 * fade);
+        this.draw('circle', Mat4.translationScale({ x: ball.pos.x + radius * 0.26, y: 0.0022, z: ball.pos.z - radius * 0.22 }, { x: radius * 1.52 * spread, y: 1, z: radius * 1.16 * spread }), '#000000', 3, 0.10 * fade);
+        this.draw('circle', Mat4.translationScale({ x: ball.pos.x + radius * 0.12, y: 0.0028, z: ball.pos.z - radius * 0.10 }, { x: radius * 1.05 * spread, y: 1, z: radius * 0.84 * spread }), '#000000', 3, 0.20 * fade);
+        this.draw('circle', Mat4.translationScale({ x: ball.pos.x + radius * 0.04, y: 0.0034, z: ball.pos.z - radius * 0.03 }, { x: radius * 0.64 * spread, y: 1, z: radius * 0.55 * spread }), '#000000', 3, 0.26 * fade);
       }
       this.gl.depthMask(true);
     }
@@ -667,7 +743,7 @@
         if (ball.pocketed && ball.sinkTime > 0.52) continue;
         const sinkScale = ball.pocketed ? Math.max(0.12, 1 - ball.sinkTime * 1.25) : 1;
         const r = ball.radius * sinkScale;
-        const position = { x: ball.pos.x, y: ball.radius - ball.sinkDepth, z: ball.pos.z };
+        const position = { x: ball.pos.x, y: ball.radius + (ball.posY || 0) - ball.sinkDepth, z: ball.pos.z };
         const model = Mat4.fromTRS(position, ball.rotation, r);
         const texture = this.getBallTexture(ball);
         this.draw('sphere', model, ball.color, 0, ball.pocketed ? Math.max(0, 1 - ball.sinkTime * 1.7) : 1, texture);
@@ -725,6 +801,7 @@
       const gl = this.gl;
       const mesh = this.meshes[meshName];
       gl.uniformMatrix4fv(this.uniforms.uModel, false, model);
+      gl.uniformMatrix3fv(this.uniforms.uNormalMatrix, false, normalMatrix(this.normalMatrixScratch, model));
       const rgb = Array.isArray(color) ? color : hexToRgb(color);
       gl.uniform3f(this.uniforms.uColor, rgb[0], rgb[1], rgb[2]);
       gl.uniform1i(this.uniforms.uMaterial, material);
@@ -767,7 +844,9 @@
     }
 
     getBallTexture(ball) {
-      const key = `${ball.kind}:${ball.number ?? ball.id}:${ball.color}`;
+      // The painted texture depends only on kind/number/colour, so numberless
+      // balls (snooker's fifteen reds) all share one cached texture.
+      const key = `${ball.kind}:${ball.number ?? ''}:${ball.color}`;
       if (this.textures.has(key)) return this.textures.get(key);
       const canvas = document.createElement('canvas');
       canvas.width = 512; canvas.height = 256;

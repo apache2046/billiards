@@ -114,6 +114,22 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 .hud-bar { position: relative; flex: 1; height: 3px; overflow: hidden; border-radius: 3px; background: rgba(255,255,255,.12); }
 .hud-bar i { position: absolute; inset: 0 auto 0 0; width: 62%; border-radius: inherit; background: linear-gradient(90deg, #149b77, var(--green-bright)); }
 
+.ball-tray { position: absolute; z-index: 7; top: 14px; left: 50%; width: min(560px, 58%); padding: 9px 12px; border-radius: 10px; transform: translateX(-50%); }
+.tray-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 7px; }
+.tray-head > span { color: var(--gold); font-size: 9px; font-weight: 700; letter-spacing: .08em; }
+.tray-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.tray-chip { display: grid; place-items: center; width: 27px; height: 27px; padding: 0; border: 1px solid rgba(255,255,255,.28); border-radius: 50%; background: radial-gradient(circle at 34% 28%, rgba(255,255,255,.55), rgba(255,255,255,0) 42%), var(--chip, #888); color: #fff; font-size: 10px; font-weight: 800; text-shadow: 0 1px 2px rgba(0,0,0,.55); cursor: pointer; transition: .15s ease; }
+.tray-chip.stripe { background: radial-gradient(circle at 34% 28%, rgba(255,255,255,.5), rgba(255,255,255,0) 42%), linear-gradient(180deg, #f2f1e7 0 24%, var(--chip, #888) 24% 76%, #f2f1e7 76%); }
+.tray-chip:hover { transform: translateY(-2px) scale(1.1); box-shadow: 0 6px 14px rgba(0,0,0,.35); }
+.tray-empty { margin: 0; color: #7f9b91; font-size: 8px; }
+.placement-button { display: flex; align-items: center; justify-content: space-between; width: 100%; margin-top: 8px; padding: 8px 10px; border: 1px solid rgba(97,244,199,.22); border-radius: 7px; color: var(--green-bright); background: rgba(35,215,164,.06); font-size: 10px; font-weight: 650; cursor: pointer; transition: .16s ease; }
+.placement-button small { color: inherit; opacity: .6; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 8px; }
+.placement-button:hover { background: rgba(35,215,164,.12); }
+.placement-button.active { border-color: rgba(229,189,101,.5); color: var(--gold); background: rgba(229,189,101,.1); }
+.stage.placing #glCanvas { cursor: grab; }
+.stage.placing.grabbing #glCanvas { cursor: grabbing; }
+.stage.orbiting #glCanvas { cursor: all-scroll; }
+
 .power-float { position: absolute; z-index: 8; display: none; align-items: center; gap: 8px; padding: 7px 9px; border-radius: 6px; background: rgba(4,14,12,.84); box-shadow: 0 8px 28px rgba(0,0,0,.3); pointer-events: none; }
 .stage.charging .power-float { display: flex; }
 .power-float div { width: 64px; height: 4px; overflow: hidden; border-radius: 4px; background: rgba(255,255,255,.12); }
@@ -164,7 +180,7 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 
 .range-control { position: relative; display: block; margin: 0 0 16px; }
 .range-control > span { display: flex; align-items: center; justify-content: space-between; }
-.range-control b { color: #adbfB8; font-size: 9px; font-weight: 550; }
+.range-control b { color: #adbfb8; font-size: 9px; font-weight: 550; }
 .range-control output { color: var(--green-bright); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; font-weight: 700; }
 .range-control input { position: relative; z-index: 3; width: 100%; height: 14px; margin: 7px 0 2px; opacity: 0; cursor: pointer; }
 .range-control::before, .range-fill { content: ""; position: absolute; z-index: 1; top: 31px; left: 0; width: 100%; height: 4px; border-radius: 4px; background: rgba(255,255,255,.1); pointer-events: none; }
@@ -225,8 +241,8 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 .footer-button { gap: 5px; height: 30px; padding: 0 9px; border-radius: 6px; color: #728d83; font-size: 8px; }
 .footer-button.active { border-color: rgba(97,244,199,.22); color: var(--green-bright); background: rgba(35,215,164,.08); }
 .footer-button svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.7; }
-.footer-button svg path[fill] { fill: currentColor; }
-.footer-button .play-icon { display: none; fill: currentColor; stroke: none; }
+.footer-button .pause-icon, .footer-button .play-icon { fill: currentColor; stroke: none; }
+.footer-button .play-icon { display: none; }
 .footer-button.paused .pause-icon { display: none; }
 .footer-button.paused .play-icon { display: block; }
 .speed-glyph { color: var(--gold); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; }

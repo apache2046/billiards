@@ -18,51 +18,131 @@
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => [...document.querySelectorAll(selector)];
 
+  // Impact sounds are modal-synthesised: each hit excites a small bank of
+  // exponentially decaying partials plus a short noise transient.  Phenolic
+  // balls ring bright and fast (2–9 kHz, ~10–30 ms), harder hits excite the
+  // upper partials more, rubber cushions thump low, and every voice is panned
+  // by where on the table it happened.  A master compressor keeps the break
+  // from clipping.
   class SoundEngine {
-    constructor() { this.context = null; this.enabled = true; }
+    constructor() { this.context = null; this.enabled = true; this.master = null; }
     ensure() {
       if (!this.enabled) return null;
       if (!this.context) {
         const AudioContext = window.AudioContext || window.webkitAudioContext;
         if (!AudioContext) return null;
         this.context = new AudioContext();
+        const compressor = this.context.createDynamicsCompressor();
+        compressor.threshold.value = -15;
+        compressor.knee.value = 18;
+        compressor.ratio.value = 7;
+        compressor.attack.value = 0.001;
+        compressor.release.value = 0.09;
+        this.master = this.context.createGain();
+        this.master.gain.value = 0.9;
+        this.master.connect(compressor);
+        compressor.connect(this.context.destination);
       }
-      if (this.context.state === 'suspended') this.context.resume();
+      if (this.context.state === 'suspended') this.context.resume().catch(() => {});
       return this.context;
     }
     setEnabled(value) {
       this.enabled = value;
       if (value) this.ensure();
     }
-    click(kind, intensity = 0.5) {
-      const ctx = this.ensure();
-      if (!ctx) return;
-      const now = ctx.currentTime;
+    voice(pan) {
+      const ctx = this.context;
+      if (!ctx.createStereoPanner) return this.master;
+      const panner = ctx.createStereoPanner();
+      panner.pan.value = clamp(pan || 0, -0.85, 0.85);
+      panner.connect(this.master);
+      return panner;
+    }
+    tone(destination, frequency, amplitude, decay, delay = 0, frequencyEnd = null) {
+      const ctx = this.context;
+      const start = ctx.currentTime + delay;
+      const osc = ctx.createOscillator();
       const gain = ctx.createGain();
-      const filter = ctx.createBiquadFilter();
-      filter.type = kind === 'pocket' ? 'lowpass' : 'bandpass';
-      // Phenolic resin balls click around 2–3 kHz; the leather tip is duller.
-      filter.frequency.value = kind === 'rail' ? 400 : kind === 'pocket' ? 210 : kind === 'cue' ? 1150 : 2550;
-      filter.Q.value = kind === 'pocket' ? 0.7 : kind === 'ball' ? 2.4 : 1.2;
-      gain.gain.setValueAtTime(Math.min(0.18, 0.035 + intensity * 0.075), now);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + (kind === 'pocket' ? 0.19 : kind === 'ball' ? 0.042 : 0.055));
-      const frames = Math.max(1, Math.floor(ctx.sampleRate * (kind === 'pocket' ? 0.18 : 0.055)));
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(frequency * (1 + (Math.random() - 0.5) * 0.018), start);
+      if (frequencyEnd) osc.frequency.exponentialRampToValueAtTime(frequencyEnd, start + decay * 4);
+      gain.gain.setValueAtTime(amplitude, start);
+      gain.gain.setTargetAtTime(0, start, decay);
+      osc.connect(gain);
+      gain.connect(destination);
+      osc.start(start);
+      osc.stop(start + decay * 9 + 0.03);
+    }
+    burst(destination, duration, amplitude, frequency, q, delay = 0) {
+      const ctx = this.context;
+      const start = ctx.currentTime + delay;
+      const frames = Math.max(8, Math.floor(ctx.sampleRate * duration * 3));
       const buffer = ctx.createBuffer(1, frames, ctx.sampleRate);
       const channel = buffer.getChannelData(0);
-      for (let i = 0; i < frames; i += 1) channel[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / frames, kind === 'pocket' ? 1.8 : 4);
-      const noise = ctx.createBufferSource();
-      noise.buffer = buffer;
-      noise.connect(filter).connect(gain).connect(ctx.destination);
-      noise.start(now);
-      if (kind === 'pocket' || kind === 'cue') {
-        const osc = ctx.createOscillator();
-        const oscGain = ctx.createGain();
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(kind === 'pocket' ? 115 : 260, now);
-        osc.frequency.exponentialRampToValueAtTime(kind === 'pocket' ? 58 : 140, now + 0.12);
-        oscGain.gain.setValueAtTime(0.03 + intensity * 0.025, now);
-        oscGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.14);
-        osc.connect(oscGain).connect(ctx.destination); osc.start(now); osc.stop(now + 0.15);
+      for (let i = 0; i < frames; i += 1) channel[i] = Math.random() * 2 - 1;
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.value = frequency;
+      filter.Q.value = q;
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(amplitude, start);
+      gain.gain.setTargetAtTime(0, start, duration / 2);
+      source.connect(filter);
+      filter.connect(gain);
+      gain.connect(destination);
+      source.start(start);
+      source.stop(start + duration * 3);
+    }
+    click(kind, intensity = 0.5, pan = 0) {
+      const ctx = this.ensure();
+      if (!ctx) return;
+      const i = clamp(intensity, 0, 1);
+      const out = this.voice(pan);
+      if (kind === 'ball') {
+        // Phenolic "clack": stiff, bright, very short; velocity tilts the
+        // spectrum toward the upper partials.
+        const amp = 0.045 + 0.24 * i;
+        const bright = 0.35 + 0.65 * i;
+        this.burst(out, 0.0035, amp * 0.75, 3800, 0.8);
+        this.tone(out, 1180, amp * 0.30, 0.0065);
+        this.tone(out, 2090, amp * 0.52, 0.0050);
+        this.tone(out, 3170, amp * 0.42 * bright, 0.0040);
+        this.tone(out, 4640, amp * 0.30 * bright, 0.0031);
+        this.tone(out, 6300, amp * 0.20 * bright * bright, 0.0025);
+        this.tone(out, 8600, amp * 0.12 * bright * bright, 0.0019);
+      } else if (kind === 'rail') {
+        // Rubber cushion: soft low thump with a hint of cloth hiss.
+        const amp = 0.05 + 0.20 * i;
+        this.burst(out, 0.008, amp * 0.30, 950, 1.1);
+        this.tone(out, 118, amp * 0.85, 0.030);
+        this.tone(out, 208, amp * 0.60, 0.021);
+        this.tone(out, 385, amp * 0.34, 0.014);
+        this.tone(out, 760, amp * 0.16, 0.008);
+      } else if (kind === 'cue') {
+        // Leather tip on the ball: a dry mid "tock".
+        const amp = 0.05 + 0.20 * i;
+        this.burst(out, 0.003, amp * 0.5, 2300, 1.2);
+        this.tone(out, 640, amp * 0.28, 0.010);
+        this.tone(out, 1320, amp * 0.45, 0.0065);
+        this.tone(out, 2540, amp * 0.30, 0.0045);
+        this.tone(out, 4150, amp * 0.14, 0.0032);
+      } else if (kind === 'miscue') {
+        // Tip skidding off the ball: scratchy, no clean ring.
+        const amp = 0.10 + 0.14 * i;
+        this.burst(out, 0.030, amp * 0.9, 1500, 0.5);
+        this.burst(out, 0.055, amp * 0.5, 620, 0.7, 0.012);
+        this.tone(out, 340, amp * 0.30, 0.030);
+      } else if (kind === 'pocket') {
+        // Drop into the liner: leather flump, falling pitch, then the ball
+        // knocking about in the pocket.
+        const amp = 0.09 + 0.24 * i;
+        this.burst(out, 0.045, amp * 0.55, 330, 0.6);
+        this.tone(out, 168, amp * 0.8, 0.05, 0, 76);
+        this.tone(out, 1750, amp * 0.16, 0.004, 0.055);
+        this.tone(out, 2300, amp * 0.10, 0.003, 0.118);
+        this.burst(out, 0.02, amp * 0.2, 700, 0.9, 0.055);
       }
     }
   }
@@ -93,6 +173,10 @@
       this.shiftHeld = false;
       this.aimTrim = 0;
       this.drag = null;
+      this.viewDrag = null;
+      this.lastRightUp = 0;
+      this.placement = false;
+      this.placementDrag = null;
       this.pullback = 0;
       this.paused = false;
       this.slowMotion = false;
@@ -120,7 +204,6 @@
       this.fpsTime = performance.now();
       this.wasMoving = false;
       this.toastTimer = null;
-      this.helpOpen = false;
       this.assists = { trajectory: true, ghost: true, tangent: true, pocket: true };
 
       this.bindUI();
@@ -151,7 +234,7 @@
       if (power != null) { this.power = clamp(power, 0.03, 1); this.updatePowerUI(); }
       const elevation = num('elev');
       if (elevation != null) {
-        this.elevation = clamp(Math.round(elevation), 0, 35);
+        this.elevation = clamp(Math.round(elevation), 0, 60);
         this.updateElevationUI(); this.updateSpinUI();
       }
       const aim = num('aim');
@@ -161,24 +244,39 @@
       }
       const trim = num('trim');
       if (trim != null) this.rotateAim(trim);
+      const yaw = num('yaw'), pitch = num('pitch');
+      if (yaw != null || pitch != null) {
+        this.renderer.orbit = {
+          yaw: (yaw ?? 0) * Math.PI / 180,
+          pitch: clamp((pitch ?? 40) * Math.PI / 180, 0.10, 1.50),
+        };
+      }
+      if (params.get('place') === '1') this.togglePlacement();
       if (params.get('shoot') === '1') {
         // Optional t=<seconds> fast-forwards the shot so a shared link (or a
-        // headless screenshot) lands exactly mid-flight.
+        // headless screenshot) lands exactly mid-flight.  The replay is
+        // silenced: its collision sounds would all queue on the suspended
+        // AudioContext and fire as one burst at the user's first click.
         const fastForward = clamp(num('t') ?? 0, 0, 12);
+        const soundWasEnabled = this.sound.enabled;
+        this.sound.enabled = false;
         this.shoot();
         if (fastForward > 0 && this.world.inShot) {
-          const dt = 1 / 300;
-          for (let i = 0; i < fastForward * 300 && this.world.isMoving(); i += 1) {
+          // Same 600 Hz step and trail cadence as the live loop, so a shared
+          // link replays exactly what the interactive session would show.
+          const dt = 1 / 600;
+          for (let i = 0; i < fastForward * 600 && this.world.isMoving(); i += 1) {
             this.world.step(dt);
             this.trailFrame += 1;
-            if (this.trailsEnabled && this.trailFrame % 5 === 0) this.captureTrails();
+            if (this.trailsEnabled && this.trailFrame % 10 === 0) this.captureTrails();
           }
         }
+        this.sound.enabled = soundWasEnabled;
       }
     }
 
     emptyShotRecord() {
-      return { firstContact: null, potted: [], cushions: [], lowestAtStart: null, expectedAtStart: null };
+      return { firstContact: null, potted: [], lowestAtStart: null, expectedAtStart: null };
     }
 
     createRuleState(mode) {
@@ -189,7 +287,6 @@
         groups: [null, null],
         winner: null,
         snookerExpected: 'red',
-        snookerClearance: 0,
       };
     }
 
@@ -203,9 +300,9 @@
       });
 
       $('#helpButton').addEventListener('click', () => this.openHelp());
-      $('#closeHelp').addEventListener('click', () => $('#helpDialog').close());
+      $('#closeHelp').addEventListener('click', () => this.closeHelp());
       $('#helpDialog').addEventListener('click', (event) => {
-        if (event.target === $('#helpDialog')) $('#helpDialog').close();
+        if (event.target === $('#helpDialog')) this.closeHelp();
       });
 
       $('#shootButton').addEventListener('click', () => this.shoot());
@@ -280,17 +377,34 @@
       this.glCanvas.addEventListener('pointermove', (event) => this.pointerMove(event));
       this.glCanvas.addEventListener('pointerup', (event) => this.pointerUp(event));
       this.glCanvas.addEventListener('pointercancel', (event) => this.pointerUp(event, true));
+      this.glCanvas.addEventListener('contextmenu', (event) => event.preventDefault());
       this.glCanvas.addEventListener('wheel', (event) => {
         event.preventDefault();
         this.renderer.setZoom(event.deltaY > 0 ? 1.08 : 0.93);
       }, { passive: false });
 
+      $('#placementToggle').addEventListener('click', () => this.togglePlacement());
+      $('#trayClear').addEventListener('click', () => this.clearTableToTray());
+
       window.addEventListener('keydown', (event) => {
-        if (/INPUT|SELECT|TEXTAREA/.test(document.activeElement?.tagName)) return;
+        // Global shortcuts must survive a click on any panel control: only a
+        // real text-entry context owns the keyboard.  For a focused button,
+        // select, slider or checkbox the shortcut wins and the control is
+        // blurred at the keypress itself, so Space always shoots instead of
+        // re-triggering the widget.  Arrow keys are left native (they still
+        // nudge a clicked slider or select).
+        const active = document.activeElement;
+        const typing = active && (active.tagName === 'TEXTAREA' || active.isContentEditable
+          || (active.tagName === 'INPUT' && !/^(range|checkbox|radio|button)$/.test(active.type)));
+        if (typing) return;
         this.shiftHeld = event.shiftKey;
         if (event.ctrlKey || event.metaKey || event.altKey) return;
+        if ($('#helpDialog').open) return; // the dialog owns the keyboard (Esc closes it natively)
         const key = event.key.toLowerCase();
-        if (ADJUST_KEYS.has(key) && !$('#helpDialog').open) {
+        const shortcut = event.code === 'Space' || event.key === 'Escape'
+          || ADJUST_KEYS.has(key) || 'rgmxb'.includes(key);
+        if (shortcut && active && active !== document.body && typeof active.blur === 'function') active.blur();
+        if (ADJUST_KEYS.has(key)) {
           this.keys.add(key);
           event.preventDefault();
           return;
@@ -301,7 +415,8 @@
         else if (key === 'g') this.toggleGuides();
         else if (key === 'm') { $('#slowButton').click(); }
         else if (key === 'x') this.resetAimTrim();
-        else if (event.key === 'Escape' && !$('#helpDialog').open) this.togglePause();
+        else if (key === 'b') this.togglePlacement();
+        else if (event.key === 'Escape') this.togglePause();
       });
       window.addEventListener('keyup', (event) => {
         this.shiftHeld = event.shiftKey;
@@ -331,8 +446,16 @@
     }
 
     pointerDown(event) {
-      if (event.button !== 0 || this.world.isMoving() || this.paused) return;
+      if (event.button === 2) {
+        if (this.drag || this.placementDrag || this.renderer.cameraMode !== 'perspective') return;
+        this.viewDrag = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, moved: 0 };
+        this.glCanvas.setPointerCapture(event.pointerId);
+        this.stage.classList.add('orbiting');
+        return;
+      }
+      if (event.button !== 0 || this.viewDrag || this.world.isMoving() || this.paused) return;
       this.sound.ensure();
+      if (this.placement) { this.beginPlacementDrag(event); return; }
       this.updateAimFromPointer(event);
       this.drag = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, moved: 0 };
       this.glCanvas.setPointerCapture(event.pointerId);
@@ -341,6 +464,17 @@
     }
 
     pointerMove(event) {
+      if (this.viewDrag && event.pointerId === this.viewDrag.pointerId) {
+        const dx = event.clientX - this.viewDrag.x, dy = event.clientY - this.viewDrag.y;
+        this.viewDrag.x = event.clientX; this.viewDrag.y = event.clientY;
+        this.viewDrag.moved += Math.abs(dx) + Math.abs(dy);
+        this.renderer.orbitBy(dx, dy);
+        return;
+      }
+      if (this.placementDrag && event.pointerId === this.placementDrag.pointerId) {
+        this.movePlacementBall(event);
+        return;
+      }
       if (this.drag && event.pointerId === this.drag.pointerId) {
         const cue = this.world.getCueBall();
         const centre = this.renderer.project({ x: cue.pos.x, y: cue.radius, z: cue.pos.z });
@@ -353,12 +487,26 @@
         this.power = clamp(0.03 + pull / 190, 0.03, 1);
         this.pullback = this.power * 0.14;
         this.updatePowerUI(); this.positionPowerFloat(event); this.schedulePrediction();
-      } else if (!this.world.isMoving() && !this.paused) {
+      } else if (!this.world.isMoving() && !this.paused && !this.placement) {
         this.updateAimFromPointer(event);
       }
     }
 
     pointerUp(event, cancelled = false) {
+      if (this.viewDrag && event.pointerId === this.viewDrag.pointerId && (event.button === 2 || cancelled)) {
+        const now = performance.now();
+        if (!cancelled && this.viewDrag.moved < 6 && now - this.lastRightUp < 380) {
+          if (this.renderer.resetOrbit()) this.toast('视角已复位');
+        }
+        this.lastRightUp = now;
+        this.viewDrag = null;
+        this.stage.classList.remove('orbiting');
+        return;
+      }
+      if (this.placementDrag && event.pointerId === this.placementDrag.pointerId) {
+        this.endPlacementDrag(cancelled);
+        return;
+      }
       if (!this.drag || event.pointerId !== this.drag.pointerId) return;
       const shouldShoot = !cancelled && this.drag.moved > 11;
       this.drag = null; this.pullback = 0; this.stage.classList.remove('charging');
@@ -430,6 +578,131 @@
       this.toast('让点微调已复位');
     }
 
+    togglePlacement() {
+      if (!this.placement && this.world.isMoving()) { this.toast('请等球静止后再进入摆球模式'); return; }
+      this.placement = !this.placement;
+      this.placementDrag = null;
+      $('#placementToggle').classList.toggle('active', this.placement);
+      $('#ballTray').hidden = !this.placement;
+      this.stage.classList.toggle('placing', this.placement);
+      if (this.placement) {
+        if (this.paused) this.setPaused(false); // dragging needs the live loop
+        this.prediction = null;
+        this.undoStack.length = 0;
+        this.actualTrails.clear();
+        this.renderBallTray();
+        $('#statusEyebrow').textContent = 'LAYOUT · 摆球模式';
+        $('#statusText').textContent = '左键拖球摆位;拖入袋口收进托盘;点托盘放回';
+        this.toast('摆球模式:自由拖动母球与彩球;再按 B 或按钮完成布局');
+      } else {
+        this.rule = this.createRuleState(this.world.mode);
+        this.shotRecord = this.emptyShotRecord();
+        this.updateAllUI();
+        this.schedulePrediction(true);
+        this.toast('布局完成,规则状态已重置,开始练习');
+      }
+    }
+
+    exitPlacementSilently() {
+      if (!this.placement) return;
+      this.placement = false;
+      this.placementDrag = null;
+      $('#placementToggle').classList.remove('active');
+      $('#ballTray').hidden = true;
+      this.stage.classList.remove('placing');
+    }
+
+    renderBallTray() {
+      const tray = $('#trayChips');
+      tray.innerHTML = '';
+      const balls = this.world.balls.filter((ball) => ball.pocketed && ball.id !== 'cue');
+      $('#trayEmpty').hidden = balls.length > 0;
+      balls.forEach((ball) => {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = `tray-chip ${ball.kind}`;
+        chip.style.setProperty('--chip', ball.color);
+        chip.textContent = ball.number ?? '';
+        chip.title = `放回 ${ball.label || ball.id}`;
+        chip.addEventListener('click', () => this.spawnFromTray(ball.id));
+        tray.appendChild(chip);
+      });
+    }
+
+    sendToTray(ball) {
+      ball.pocketed = true; ball.pocketId = 'tray';
+      ball.sinkTime = 1; ball.sinkDepth = ball.radius * 3.2; ball.sinkTarget = null;
+      ball.vel = { x: 0, z: 0 }; ball.omega = { x: 0, y: 0, z: 0 };
+      ball.state = 'pocketed';
+    }
+
+    spawnFromTray(id) {
+      const ball = this.world.getBall(id);
+      if (!ball || !ball.pocketed) return;
+      ball.pocketed = false; ball.pocketId = null;
+      ball.sinkTime = 0; ball.sinkDepth = 0; ball.sinkTarget = null;
+      ball.vel = { x: 0, z: 0 }; ball.omega = { x: 0, y: 0, z: 0 };
+      ball.state = 'stationary';
+      if (!this.world.respotBall(ball, { x: 0, z: 0 })) {
+        this.sendToTray(ball);
+        this.toast('台面中心附近没有空位');
+      }
+      this.renderBallTray();
+    }
+
+    clearTableToTray() {
+      this.world.balls.forEach((ball) => {
+        if (ball.id !== 'cue' && !ball.pocketed) this.sendToTray(ball);
+      });
+      this.renderBallTray();
+      this.toast('台面已清空,母球保留;点托盘中的球放回');
+    }
+
+    beginPlacementDrag(event) {
+      const point = this.renderer.screenToTable(event.clientX, event.clientY, this.world.params.radius);
+      if (!point) return;
+      let pick = null;
+      for (const ball of this.world.activeBalls()) {
+        const distance = Math.hypot(ball.pos.x - point.x, ball.pos.z - point.z);
+        if (distance < (pick?.distance ?? Infinity)) pick = { ball, distance };
+      }
+      if (!pick || pick.distance > pick.ball.radius * 2.4) return;
+      this.placementDrag = { ball: pick.ball, pointerId: event.pointerId, overPocket: null };
+      this.glCanvas.setPointerCapture(event.pointerId);
+      this.stage.classList.add('grabbing');
+    }
+
+    movePlacementBall(event) {
+      const drag = this.placementDrag;
+      const ball = drag.ball;
+      const point = this.renderer.screenToTable(event.clientX, event.clientY, ball.radius);
+      if (!point) return;
+      const t = this.world.table, R = ball.radius;
+      drag.overPocket = ball.id !== 'cue'
+        ? t.pockets.find((p) => Math.hypot(point.x - p.x, point.z - p.z) < 0.075) || null
+        : null;
+      const x = clamp(point.x, -t.width / 2 + R, t.width / 2 - R);
+      const z = clamp(point.z, -t.height / 2 + R, t.height / 2 - R);
+      const clear = this.world.balls.every((other) => other === ball || other.pocketed
+        || Math.hypot(other.pos.x - x, other.pos.z - z) > R + other.radius + 0.0004);
+      if (clear) { ball.pos.x = x; ball.pos.z = z; }
+      ball.vel.x = 0; ball.vel.z = 0;
+      ball.omega = { x: 0, y: 0, z: 0 };
+      ball.state = 'stationary';
+    }
+
+    endPlacementDrag(cancelled) {
+      const drag = this.placementDrag;
+      this.placementDrag = null;
+      this.stage.classList.remove('grabbing');
+      if (!drag || cancelled) return;
+      if (drag.overPocket && drag.ball.id !== 'cue') {
+        this.sendToTray(drag.ball);
+        this.renderBallTray();
+        this.toast(`${drag.ball.label || drag.ball.id} 已收进托盘`);
+      }
+    }
+
     speedFromPower() { return 0.18 + 6.15 * Math.pow(this.power, 1.34); }
 
     shotOptions() {
@@ -442,6 +715,7 @@
 
     shoot() {
       if (!this.renderer || this.paused || this.world.isMoving()) return;
+      if (this.placement) { this.toast('摆球模式中;按 B 或按钮完成布局后再击球'); return; }
       if (this.rule.winner != null) { this.toast(`本局已结束，${this.rule.winner + 1} 号选手获胜；重新摆球可开始下一局`); return; }
       const cue = this.world.getCueBall();
       if (!cue || cue.pocketed) { this.world.respotCue(); this.schedulePrediction(true); return; }
@@ -469,24 +743,29 @@
     }
 
     handlePhysicsEvent(event) {
+      const pan = event.position ? clamp(event.position.x / (this.world.table.width / 2), -1, 1) * 0.7 : 0;
       if (event.type === 'cue') {
-        this.sound.click('cue', clamp(event.speed / 6, 0.15, 1));
+        if (event.miscue) {
+          this.sound.click('miscue', clamp(event.speed / 4, 0.3, 1), pan);
+          this.toast('疵杆!击点超出皮头摩擦极限,动量与旋转大量损失');
+        } else {
+          this.sound.click('cue', clamp(event.speed / 6, 0.15, 1), pan);
+        }
         this.addEffect(event.position, 'cue', event.speed);
       } else if (event.type === 'ball-ball') {
-        this.sound.click('ball', clamp(event.speed / 4, 0.1, 1));
+        this.sound.click('ball', clamp(event.speed / 4, 0.1, 1), pan);
         this.addEffect(event.position, 'ball', event.speed);
         if (!this.shotRecord.firstContact && (event.aId === 'cue' || event.bId === 'cue')) {
           this.shotRecord.firstContact = event.aId === 'cue' ? event.bId : event.aId;
         }
       } else if (event.type === 'cushion') {
-        this.sound.click('rail', clamp(event.speed / 4, 0.08, 0.85));
+        this.sound.click('rail', clamp(event.speed / 4, 0.08, 0.85), pan);
         this.addEffect(event.position, 'rail', event.speed);
-        this.shotRecord.cushions.push(event.ballId);
         if (event.ballId === 'cue') {
-          $('#statusText').textContent = `${this.railEffectLabel(event)} · 入 ${event.incidentAngle.toFixed(1)}° → 出 ${event.reboundAngle.toFixed(1)}°`;
+          $('#statusText').textContent = `${this.railEffectLabel(event)} · 入 ${event.incidentAngle.toFixed(1)}° → 出 ${event.reboundAngle.toFixed(1)}° · 胶边压缩 ${(event.compression * 1000).toFixed(1)} mm`;
         }
       } else if (event.type === 'pocket') {
-        this.sound.click('pocket', clamp(event.speed / 3, 0.2, 1));
+        this.sound.click('pocket', clamp(event.speed / 3, 0.2, 1), pan);
         this.addEffect(event.position, 'pocket', event.speed);
         this.shotRecord.potted.push(event.ballId);
       } else if (event.type === 'settled') {
@@ -513,7 +792,9 @@
       if (this.activeDrill) {
         if (cueFoul) this.world.respotCue();
         const rail = this.world.lastCushionEvent;
-        this.toast(rail ? `${this.railEffectLabel(rail)}：入射 ${rail.incidentAngle.toFixed(1)}°，反弹 ${rail.reboundAngle.toFixed(1)}°` : '实验完成；点击同一场景可复位后做对照');
+        this.toast(rail
+          ? `${this.railEffectLabel(rail)}：入射 ${rail.incidentAngle.toFixed(1)}°，反弹 ${rail.reboundAngle.toFixed(1)}°，胶边压缩 ${(rail.compression * 1000).toFixed(1)} mm`
+          : '实验完成；点击同一场景可复位后做对照');
         return;
       }
       if (mode === 'practice') {
@@ -647,6 +928,14 @@
       } else {
         this.rule.currentPlayer = opponent;
       }
+      // Whenever the turn passes, "ball on" resets: red while reds remain
+      // (a striker left on 'color' must not hand that state to the opponent),
+      // yellow once the final red's colour chance has gone; a clearance-phase
+      // colour stays the target for the incoming player.
+      if ((foul || points === 0) && (this.rule.snookerExpected === 'red' || this.rule.snookerExpected === 'color')) {
+        const redsRemaining = this.world.balls.some((b) => !b.pocketed && b.value === 1);
+        this.rule.snookerExpected = redsRemaining ? 'red' : 'yellow';
+      }
       if (cueFoul) this.world.respotCue();
       if (redsBefore === 0 && expectedRed) this.rule.snookerExpected = 'yellow';
     }
@@ -674,6 +963,7 @@
 
     loadDrill(kind) {
       if (this.world.isMoving()) { this.toast('请等待球静止后再切换实验'); return; }
+      this.exitPlacementSilently();
       if (this.world.mode !== 'chineseEight') this.world.setMode('chineseEight');
       else this.world.reset('chineseEight');
       this.world.setCueType($('#cueType').value);
@@ -683,6 +973,7 @@
 
       const place = (ball, position) => {
         ball.pos = { ...position }; ball.vel = { x: 0, z: 0 }; ball.omega = { x: 0, y: 0, z: 0 };
+        ball.posY = 0; ball.velY = 0;
         ball.rotation = [0, 0, 0, 1]; ball.pocketed = false; ball.pocketId = null;
         ball.sinkTime = 0; ball.sinkDepth = 0; ball.sinkTarget = null; ball.lastSpeed = 0; ball.state = 'stationary';
       };
@@ -727,6 +1018,12 @@
     }
 
     changeMode(mode) {
+      if (this.world.isMoving()) {
+        $('#gameMode').value = this.world.mode;
+        this.toast('请等球静止后再切换项目');
+        return;
+      }
+      this.exitPlacementSilently();
       this.activeDrill = null;
       $$('[data-drill]').forEach((button) => button.classList.remove('active'));
       this.world.setMode(mode);
@@ -741,6 +1038,7 @@
 
     resetRack() {
       const mode = this.world.mode;
+      this.exitPlacementSilently();
       this.activeDrill = null;
       $$('[data-drill]').forEach((button) => button.classList.remove('active'));
       this.world.reset(mode);
@@ -748,7 +1046,7 @@
       this.renderer.setTable(this.world.table);
       this.rule = this.createRuleState(mode); this.shotNumber = 1;
       this.undoStack.length = 0; this.actualTrails.clear(); this.effects.length = 0;
-      this.aimDirection = { x: 1, z: 0 }; this.paused = false;
+      this.aimDirection = { x: 1, z: 0 }; this.setPaused(false);
       this.schedulePrediction(true); this.updateAllUI(); this.toast('已重新摆球');
     }
 
@@ -760,10 +1058,14 @@
       this.actualTrails.clear(); this.effects.length = 0; this.schedulePrediction(true); this.updateAllUI(); this.toast('已撤销上一杆');
     }
 
+    setPaused(value) {
+      this.paused = value;
+      $('#pauseButton').classList.toggle('paused', value);
+      $('#pauseButton span').textContent = value ? '继续' : '暂停';
+    }
+
     togglePause() {
-      this.paused = !this.paused;
-      $('#pauseButton').classList.toggle('paused', this.paused);
-      $('#pauseButton span').textContent = this.paused ? '继续' : '暂停';
+      this.setPaused(!this.paused);
       this.toast(this.paused ? '模拟已暂停' : '继续模拟');
     }
 
@@ -780,16 +1082,29 @@
       else dialog.setAttribute('open', '');
     }
 
+    closeHelp() {
+      const dialog = $('#helpDialog');
+      if (typeof dialog.close === 'function') dialog.close();
+      else dialog.removeAttribute('open');
+    }
+
     schedulePrediction(immediate = false) {
       this.predictionDirty = true;
-      clearTimeout(this.predictionTimer);
-      if (!this.guidesEnabled || this.world.isMoving()) return;
-      const delay = immediate ? 0 : Math.max(34, 70 - (performance.now() - this.lastPredictionAt));
-      this.predictionTimer = setTimeout(() => this.updatePrediction(), delay);
+      if (!this.guidesEnabled || this.placement || this.world.isMoving()) {
+        clearTimeout(this.predictionTimer); this.predictionTimer = null;
+        return;
+      }
+      // Throttle, not debounce: while a timer is pending, let it fire — it
+      // reads the latest aim state anyway.  Re-arming on every pointermove
+      // would starve the guide line for as long as the input keeps flowing.
+      if (immediate) { clearTimeout(this.predictionTimer); this.predictionTimer = null; }
+      else if (this.predictionTimer != null) return;
+      const delay = immediate ? 0 : Math.max(0, 70 - (performance.now() - this.lastPredictionAt));
+      this.predictionTimer = setTimeout(() => { this.predictionTimer = null; this.updatePrediction(); }, delay);
     }
 
     updatePrediction() {
-      if (!this.predictionDirty || !this.guidesEnabled || this.world.isMoving()) return;
+      if (!this.predictionDirty || !this.guidesEnabled || this.placement || this.world.isMoving()) return;
       this.predictionDirty = false;
       this.lastPredictionAt = performance.now();
       this.prediction = this.world.predictShot(this.shotOptions());
@@ -821,12 +1136,14 @@
       const timeScale = this.slowMotion ? 0.5 : 1;
       if (!this.paused) {
         this.accumulator += rawDelta * timeScale;
-        const fixed = 1 / 300;
+        // 600 Hz fixed step: at break speed a ball travels ~1 cm per step, so
+        // thin-cut contact times land within ~1.7 ms of the true instant.
+        const fixed = 1 / 600;
         let steps = 0;
-        while (this.accumulator >= fixed && steps < 20) {
+        while (this.accumulator >= fixed && steps < 40) {
           this.world.step(fixed);
           this.accumulator -= fixed; steps += 1; this.trailFrame += 1;
-          if (this.trailsEnabled && this.trailFrame % 5 === 0) this.captureTrails();
+          if (this.trailsEnabled && this.trailFrame % 10 === 0) this.captureTrails();
         }
       }
       if (this.pendingSettle) this.settleShot();
@@ -838,7 +1155,7 @@
         if (!moving) this.schedulePrediction(true);
       }
       this.renderer.render(this.world, {
-        showCue: !moving && !this.paused,
+        showCue: !moving && !this.paused && !this.placement,
         aimDirection: this.aimDirection,
         elevation: this.elevation,
         pullback: this.pullback,
@@ -1114,7 +1431,7 @@
     }
 
     updateElevationUI() {
-      $('#elevationSlider').value = this.elevation; $('#elevationValue').textContent = `${this.elevation}°`; $('#elevationFill').style.width = `${this.elevation / 35 * 100}%`;
+      $('#elevationSlider').value = this.elevation; $('#elevationValue').textContent = `${this.elevation}°`; $('#elevationFill').style.width = `${this.elevation / 60 * 100}%`;
       this.updateHud();
     }
 
@@ -1179,7 +1496,7 @@
       const speed = cue && !cue.pocketed ? Math.hypot(cue.vel.x, cue.vel.z) : 0;
       const rpm = cue && !cue.pocketed ? Math.hypot(cue.omega.x, cue.omega.y, cue.omega.z) * 60 / (2 * Math.PI) : 0;
       $('#speedValue').textContent = speed.toFixed(2); $('#liveRpmValue').textContent = Math.round(rpm);
-      const stateLabels = { stationary: '静止', sliding: '滑动', rolling: '纯滚动', spinning: '原地旋转', pocketed: '已落袋' };
+      const stateLabels = { stationary: '静止', sliding: '滑动', rolling: '纯滚动', spinning: '原地旋转', airborne: '腾空', pocketed: '已落袋' };
       $('#motionStateValue').textContent = stateLabels[cue?.state] || '静止';
       if (cue && !cue.pocketed) {
         const slip = Math.hypot(cue.vel.x + cue.omega.z * cue.radius, cue.vel.z - cue.omega.x * cue.radius);

@@ -127,6 +127,15 @@
           </div>
         </div>
 
+        <div class="ball-tray glass-panel" id="ballTray" hidden>
+          <div class="tray-head">
+            <span>摆球托盘 · 点击放回台面</span>
+            <button id="trayClear" class="text-button" type="button">清空台面</button>
+          </div>
+          <div class="tray-chips" id="trayChips"></div>
+          <p class="tray-empty" id="trayEmpty">台面球齐;把球拖进任意袋口即可收到这里</p>
+        </div>
+
         <div class="power-float" id="powerFloat" aria-hidden="true">
           <div><span id="dragPowerBar"></span></div>
           <strong id="dragPowerLabel">62%</strong>
@@ -192,9 +201,9 @@
 
             <label class="range-control elevation-control">
               <span><b>球杆仰角</b><output id="elevationValue">3°</output></span>
-              <input id="elevationSlider" type="range" min="0" max="35" value="3">
+              <input id="elevationSlider" type="range" min="0" max="60" value="3">
               <i class="range-fill" id="elevationFill"></i>
-              <small><span>平杆</span><span>弧线 / 扎杆</span></small>
+              <small><span>平杆</span><span>跳杆 / 扎杆</span></small>
             </label>
 
             <button id="shootButton" class="shoot-button" type="button">
@@ -228,6 +237,9 @@
                 <button type="button" data-drill="follow">高杆吸库</button>
               </div>
               <p id="drillHint">推荐先打“顺反塞吃库”，左右塞各打一杆，对照入射角与反弹角。</p>
+              <button id="placementToggle" class="placement-button" type="button">
+                <span>手动摆球 · 布局分析</span><small>B</small>
+              </button>
             </div>
             <div class="physics-row">
               <label class="select-shell full"><span>球杆前节</span><select id="cueType"><option value="small" selected>小头杆 · 10.0 mm</option><option value="large">大头杆 · 12.5 mm</option></select></label>
@@ -269,7 +281,7 @@
       <div class="footer-meta">
         <span><i class="offline-dot"></i>OFFLINE</span>
         <span id="fpsCounter">60 FPS</span>
-        <span>PHYSICS 300 Hz</span>
+        <span>PHYSICS 600 Hz</span>
       </div>
     </footer>
   </div>
@@ -289,8 +301,8 @@
         <article><b>04</b><h3>做对照实验</h3><p>用“一键物理实验”固定球位，只改变击点、力度、皮头或台呢。慢动作对照入射角/反弹角及滑动到滚动的转换。</p></article>
       </div>
       <div class="physics-note">
-        <div><span>模型范围</span><strong>三维库鼻接触 + 摩擦锥 + 顺毛台呢</strong></div>
-        <p>默认结合乔氏 Q8 金腿公开结构与中式赛事级器材数据标定：中式球规格、钢库圆弧袋角、85 mm 袋口、42 mm 库高与顺毛台呢。球杆模型考虑前端有效质量、皮头摩擦、Cross 刚性冲量初始偏移公式和抬杆回弯。胶条形变仍以等效冲量求解，品牌未公开的截面、配方和安装批次只能做可重复的赛事级近似，不能替代实台测量。</p>
+        <div><span>模型范围</span><strong>库边橡胶压缩接触 + 摩擦锥 + 顺毛台呢</strong></div>
+        <p>默认结合乔氏 Q8 金腿公开结构与中式赛事级器材数据标定：中式球规格、钢库圆弧袋角、85 mm 角袋 / 100 mm 中袋（袋角圆弧最窄处，中袋按台协规则比角袋宽 15 mm）、42 mm 库高与顺毛台呢。球杆模型考虑前端有效质量、皮头摩擦、Cross 刚性冲量初始偏移公式和抬杆回弯。库边按 Hunt-Crossley 压缩-阻尼接触在毫秒尺度上细分积分：回弹系数随球速自然衰减，摩擦滑移在接触过程中连续演化，压缩深度与接触时长实时显示；品牌未公开的胶条截面、配方和安装批次只能做可重复的赛事级近似，不能替代实台测量。</p>
       </div>
       <div class="shortcuts">
         <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 微调打点</span>
@@ -298,6 +310,9 @@
         <span><kbd>Z</kbd><kbd>C</kbd> 水平让点微调</span>
         <span><kbd>X</kbd> 复位让点</span>
         <span><kbd>Shift</kbd> 微调加速 ×4</span>
+        <span><kbd>B</kbd> 手动摆球</span>
+        <span><kbd>右键拖动</kbd> 旋转视角</span>
+        <span><kbd>双击右键</kbd> 复位视角</span>
         <span><kbd>Space</kbd> 击球</span><span><kbd>R</kbd> 重新摆球</span><span><kbd>G</kbd> 辅助线</span><span><kbd>M</kbd> 慢动作</span><span><kbd>Esc</kbd> 暂停</span>
       </div>
       <p class="research-credit">参数与模型校核参考 Pooltool（Apache-2.0）、Mathavan 等人的球/库碰撞论文及 Dr. Dave 的技术资料；本项目 WebGL 与物理代码为独立实现。详细来源见 README。</p>

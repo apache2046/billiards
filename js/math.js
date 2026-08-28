@@ -149,10 +149,6 @@
     translationScale(position, scale) {
       return Mat4.fromTRS(position, Quat.identity(), scale);
     },
-    rotationY(angle) {
-      const c = Math.cos(angle), s = Math.sin(angle);
-      return new Float32Array([c, 0, -s, 0, 0, 1, 0, 0, s, 0, c, 0, 0, 0, 0, 1]);
-    },
     invert(a) {
       const out = new Float32Array(16);
       const a00 = a[0], a01 = a[1], a02 = a[2], a03 = a[3];
