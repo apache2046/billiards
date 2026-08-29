@@ -250,6 +250,42 @@ function cushionRig({ sideSpin = 0, topSpin = null }) {
   assert.ok(Math.abs(slow.cue.velY) < 1e-9, 'soft rail contact must not hop');
 }
 
+// The rubber contact lives across steps, so its outcome must not depend on
+// the caller's step size: the same spinning impact integrated at 600 Hz and
+// on the deepest slow-motion grid (100 kHz, 10 µs) has to leave the rail with
+// the same velocity, spin and telemetry.  On the fine grid the episode must
+// also visibly persist across many steps — that persistence is what lets the
+// compression be watched frame by frame in slow motion.
+{
+  const run = (dt) => {
+    const world = new PhysicsWorld('chineseEight', { silent: true });
+    const cue = world.getCueBall(); world.balls = [cue];
+    cue.pos = { x: world.table.width / 2 - cue.radius - 0.03, z: 0.1 };
+    cue.vel = { x: 2.2, z: 0.9 };
+    cue.omega = { x: 31.5, y: 18, z: -77 };
+    let event = null, contactSteps = 0;
+    world.onEvent((e) => { if (!event && e.type === 'cushion') event = e; });
+    for (let i = 0, total = Math.round(0.12 / dt); i < total; i += 1) {
+      world.step(dt);
+      if (cue.railContact) contactSteps += 1;
+    }
+    return { cue, event, contactSteps };
+  };
+  const coarse = run(1 / 600);
+  const fine = run(1 / 100000);
+  assert.ok(coarse.event && fine.event, 'dt-invariance rig missed the cushion');
+  assert.ok(Math.hypot(coarse.cue.vel.x - fine.cue.vel.x, coarse.cue.vel.z - fine.cue.vel.z) < 0.01,
+    'cushion outcome drifted with step size');
+  assert.ok(Math.abs(coarse.event.restitution - fine.event.restitution) < 0.01,
+    'measured restitution drifted with step size');
+  assert.ok(Math.abs(coarse.event.compression - fine.event.compression) < 5e-5,
+    'compression depth drifted with step size');
+  assert.ok(Math.abs(coarse.event.contactTime - fine.event.contactTime) < 1.5e-4,
+    'contact time drifted with step size');
+  assert.ok(fine.contactSteps > 50,
+    `fine-grid contact only persisted ${fine.contactSteps} steps; the episode must span steps, not resolve atomically`);
+}
+
 // Balls frozen on every straight cushion and every rounded jaw must be pushed
 // to the shared visible boundary and remain stable without jitter or embedding.
 {

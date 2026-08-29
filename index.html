@@ -272,7 +272,7 @@
           <svg class="play-icon" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7z"/></svg>
           <span>暂停</span>
         </button>
-        <button id="slowButton" class="footer-button" type="button"><span class="speed-glyph">½×</span><span>慢动作</span></button>
+        <button id="slowButton" class="footer-button" type="button"><span class="speed-glyph">1×</span><span>慢动作</span></button>
       </div>
       <div class="shot-timeline">
         <div class="timeline-label"><span id="shotLabel">第 1 杆</span><small id="shotHint">瞄准线显示考虑当前杆法后的模拟轨迹</small></div>
@@ -281,7 +281,7 @@
       <div class="footer-meta">
         <span><i class="offline-dot"></i>OFFLINE</span>
         <span id="fpsCounter">60 FPS</span>
-        <span>PHYSICS 600 Hz</span>
+        <span id="physicsRate">PHYSICS 1 kHz</span>
       </div>
     </footer>
   </div>
@@ -298,7 +298,7 @@
         <article><b>01</b><h3>瞄准与出杆</h3><p>移动鼠标改变方向,<kbd>Z</kbd>/<kbd>C</kbd> 精细水平微调(加塞让点专用,<kbd>X</kbd> 一键复位,按住 <kbd>Shift</kbd> 加速);按住台面反向拖动松手击球,或 <kbd>Q</kbd>/<kbd>E</kbd> 调力度后按空格。</p></article>
         <article><b>02</b><h3>高低杆与侧塞</h3><p>拖动母球击点,或用 <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 精调;虚线圈是当前皮头的防滑杆安全区。灰线是未补偿瞄向,绿色路线包含球杆偏移与台呢回弯。</p></article>
         <article><b>03</b><h3>读懂辅助线</h3><p>青线是母球数值预演，金线是目标球路径。虚线圆为碰撞瞬间的假想球，白色短线表示切球后的 90° 分离方向。</p></article>
-        <article><b>04</b><h3>做对照实验</h3><p>用“一键物理实验”固定球位，只改变击点、力度、皮头或台呢。慢动作对照入射角/反弹角及滑动到滚动的转换。</p></article>
+        <article><b>04</b><h3>做对照实验</h3><p>用“一键物理实验”固定球位，只改变击点、力度、皮头或台呢。<kbd>M</kbd> 在 1×、1/4、1/20、1/50、1/100 五档间循环——档位越慢，物理步长按同比例细化（最深 10 µs），可以逐帧观看胶边压缩与滑动到滚动的转换。</p></article>
       </div>
       <div class="physics-note">
         <div><span>模型范围</span><strong>库边橡胶压缩接触 + 摩擦锥 + 顺毛台呢</strong></div>
@@ -313,7 +313,7 @@
         <span><kbd>B</kbd> 手动摆球</span>
         <span><kbd>右键拖动</kbd> 旋转视角</span>
         <span><kbd>双击右键</kbd> 复位视角</span>
-        <span><kbd>Space</kbd> 击球</span><span><kbd>R</kbd> 重新摆球</span><span><kbd>G</kbd> 辅助线</span><span><kbd>M</kbd> 慢动作</span><span><kbd>Esc</kbd> 暂停</span>
+        <span><kbd>Space</kbd> 击球</span><span><kbd>R</kbd> 重新摆球</span><span><kbd>G</kbd> 辅助线</span><span><kbd>M</kbd> 慢动作档位</span><span><kbd>Esc</kbd> 暂停</span>
       </div>
       <p class="research-credit">参数与模型校核参考 Pooltool（Apache-2.0）、Mathavan 等人的球/库碰撞论文及 Dr. Dave 的技术资料；本项目 WebGL 与物理代码为独立实现。详细来源见 README。</p>
     </div>

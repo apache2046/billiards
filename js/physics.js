@@ -67,7 +67,9 @@
   // falling with speed emerges from the model instead of a hand curve.
   const CUSHION_STIFFNESS = 1.5e7;   // N·m^-1.5
   const CUSHION_DAMPING_REF = 0.127; // s/m at restitution 0.82 (calibrated in tests)
-  const CUSHION_SUBSTEP = 1 / 14400; // 24 sub-steps per 600 Hz step during contact
+  // Contact sub-grid ceiling; the effective grid is min(this, dt), so the
+  // refined steps used in slow motion sharpen the contact integration too.
+  const CUSHION_SUBSTEP = 1 / 14400;
 
   const TIP_PRESETS = Object.freeze({
     soft: Object.freeze({
@@ -340,6 +342,7 @@
       sinkTime: 0,
       sinkDepth: 0,
       sinkTarget: null,
+      railContact: null,
       lastSpeed: 0,
     };
   }
@@ -418,6 +421,7 @@
       ...ball,
       pos: { ...ball.pos }, vel: { ...ball.vel }, omega: { ...ball.omega }, rotation: [...ball.rotation],
       sinkTarget: ball.sinkTarget ? { ...ball.sinkTarget } : null,
+      railContact: ball.railContact ? { ...ball.railContact } : null,
     };
   }
 
@@ -737,7 +741,7 @@
       ball.lastSpeed = newSpeed;
     }
 
-    resolveBallPairs(dt = 1 / 600) {
+    resolveBallPairs(dt = 1 / 1000) {
       const balls = this.balls;
       for (let i = 0; i < balls.length; i += 1) {
         const a = balls[i];
@@ -863,9 +867,25 @@
       }
     }
 
-    resolveCushions(ball, dt = 1 / 600) {
+    resolveCushions(ball, dt = 1 / 1000) {
       // A ball whose underside clears the cushion top sails over the rail.
-      if (ball.posY > (this.table.cushionTopHeight || 0.042)) return;
+      if (ball.posY > (this.table.cushionTopHeight || 0.042)) {
+        if (ball.railContact) this.finishRailContact(ball);
+        return;
+      }
+      if (ball.railContact) {
+        // Continuing contact.  The second resolver pass of the same step must
+        // not integrate the same interval twice.
+        if (ball.railContact.stepStamp === this.time) return;
+        // The contact integrator owns this step's whole time slice: undo the
+        // ballistic advance — which on a restituting ball can overshoot the
+        // shallow remaining compression and would silently discard the energy
+        // still stored in the spring — and let the rubber finish its push-off.
+        ball.pos.x -= ball.vel.x * dt;
+        ball.pos.z -= ball.vel.z * dt;
+        this.integrateRailContact(ball, dt, dt);
+        return;
+      }
       const contacts = this.scanCushionContacts(ball);
       if (!contacts.length) return;
       const primary = contacts.reduce((best, c) => (c.depth > best.depth ? c : best));
@@ -879,7 +899,15 @@
         }
         return;
       }
-      this.runCushionEpisode(ball, primary, approach, dt);
+      this.beginRailContact(ball, primary, approach);
+      // Rewind to the true first-touch point, keeping ~10 µm of engagement so
+      // the first sub-step still sees the contact it is about to compress; a
+      // penetration older than this step claims the whole step instead.
+      const timeToTouch = approach > 1e-9 ? (primary.depth - 1e-5) / approach : Infinity;
+      const rewound = clamp(Math.min(dt, timeToTouch), 0, dt);
+      ball.pos.x -= ball.vel.x * rewound;
+      ball.pos.z -= ball.vel.z * rewound;
+      this.integrateRailContact(ball, rewound, dt);
     }
 
     // Pure contact geometry.  Straight cushion planes, round jaw arcs and flat
@@ -932,46 +960,53 @@
 
     // The rail is not a rigid wall: the rubber nose compresses one to a few
     // millimetres over roughly a millisecond and returns most of the stored
-    // energy.  Each contact is integrated as a Hunt-Crossley episode on a
-    // fine sub-grid inside the fixed step: the ball is first rewound to the
-    // true first-touch point (a fast step can otherwise carry it millimetres
-    // past tangency), the spring-damper produces speed-dependent restitution
-    // by itself, Coulomb friction at the raised nose evolves (and may stick
-    // or reverse) through the contact, and the episode reports the physical
-    // compression depth and contact time.  The nose sits above the centre, so
-    // part of the normal force is driven into the slate; its partial return
-    // is the visible hop off the rail on firm square hits, and a jumping ball
+    // energy.  A contact lives as an episode on the ball (ball.railContact):
+    // each fixed step contributes exactly its own dt of Hunt-Crossley
+    // integration on a sub-grid of min(CUSHION_SUBSTEP, dt), so slow-motion
+    // steps refine the contact resolution and the compression visibly evolves
+    // across frames instead of resolving atomically inside one step.  The
+    // spring-damper produces speed-dependent restitution by itself, Coulomb
+    // friction at the raised nose evolves (and may stick or reverse) through
+    // the contact, and the closing report carries the physical compression
+    // depth and contact time.  The nose sits above the centre, so part of the
+    // normal force is driven into the slate; its partial return is the
+    // visible hop off the rail on firm square hits, and a jumping ball
     // striking below its centre is deflected upward instead.
-    runCushionEpisode(ball, primary, approach, dt) {
+    beginRailContact(ball, primary, approach) {
       const R = ball.radius;
-      const vin = { x: ball.vel.x, z: ball.vel.z };
-      let rewound = 0;
-      if (approach > 0.02 && primary.depth > 2e-5) {
-        // Keep ~10 µm of initial engagement so the first sub-step still sees
-        // the contact it is about to compress.
-        rewound = Math.min(dt, (primary.depth - 1e-5) / approach);
-        ball.pos.x -= vin.x * rewound;
-        ball.pos.z -= vin.z * rewound;
-      }
       const noseHeight = clamp(this.table.cushionContactHeight - R - Math.max(0, ball.posY), -R * 0.49, R * 0.49);
       const reach = Math.sqrt(Math.max(R * R - noseHeight * noseHeight, R * R * 0.72));
-      const horizontal = reach / R, vertical = -noseHeight / R;
       const rotationalNormal = noseHeight * (ball.omega.x * primary.nz - ball.omega.z * primary.nx);
       const followRatio = clamp(-rotationalNormal / Math.max(approach, 0.16), -0.75, 0.75);
-      const sideSurfaceSpeed = ball.omega.y * reach;
-      const linearTangentSpeed = -vin.x * primary.nz + vin.z * primary.nx;
-      // Mathavan's measurements: topspin rolling over the nose returns more
-      // energy than draw, which scales the damping term.
-      const chi = this.cushionDamping() * clamp(1 - 0.50 * followRatio, 0.45, 1.55);
+      ball.railContact = {
+        id: primary.id, nx: primary.nx, nz: primary.nz,
+        vinX: ball.vel.x, vinZ: ball.vel.z, approach,
+        noseHeight, reach, horizontal: reach / R, vertical: -noseHeight / R,
+        followRatio,
+        sideSurfaceSpeed: ball.omega.y * reach,
+        linearTangentSpeed: -ball.vel.x * primary.nz + ball.vel.z * primary.nx,
+        // Mathavan's measurements: topspin rolling over the nose returns more
+        // energy than draw, which scales the damping term.
+        chi: this.cushionDamping() * clamp(1 - 0.50 * followRatio, 0.45, 1.55),
+        maxDepth: 0, contactTime: 0, downImpulse: 0, slipSteps: 0, stickSteps: 0,
+        stepStamp: -1,
+      };
+    }
+
+    integrateRailContact(ball, budget, dt) {
+      const contact = ball.railContact;
+      const { noseHeight, reach, horizontal, vertical, chi } = contact;
       const mu = this.params.frictionCushion;
-      const h = CUSHION_SUBSTEP;
-      let contactTime = 0, maxDepth = 0, downImpulse = 0, slipSteps = 0, stickSteps = 0;
-      for (let i = 0; i < 220; i += 1) {
+      const baseStep = Math.min(CUSHION_SUBSTEP, dt);
+      let consumed = 0;
+      let engaged = true;
+      for (let i = 0; i < 220 && consumed < budget - 1e-12; i += 1) {
         const contacts = this.scanCushionContacts(ball);
-        if (!contacts.length) break;
+        if (!contacts.length) { engaged = false; break; }
+        const h = Math.min(baseStep, budget - consumed);
         let fx = 0, fy = 0, fz = 0, torqueX = 0, torqueY = 0, torqueZ = 0;
         for (const c of contacts) {
-          maxDepth = Math.max(maxDepth, c.depth);
+          contact.maxDepth = Math.max(contact.maxDepth, c.depth);
           const rate = -(ball.vel.x * c.nx + ball.vel.z * c.nz);
           const fn = CUSHION_STIFFNESS * c.depth * Math.sqrt(c.depth) * (1 + chi * rate);
           if (!(fn > 0)) continue;
@@ -988,7 +1023,7 @@
           const slipT = surfX * tX + surfZ * tZ;
           const slipY = surfY;
           const slipMag = Math.hypot(slipT, slipY);
-          if (slipMag < 1e-6) { stickSteps += 1; continue; }
+          if (slipMag < 1e-6) { contact.stickSteps += 1; continue; }
           const dirT = slipT / slipMag, dirY = slipY / slipMag;
           const sX = dirT * tX, sY = dirY, sZ = dirT * tZ;
           const crossX = armY * sZ - armZ * sY;
@@ -1000,7 +1035,7 @@
             + (crossX * crossX + crossY * crossY + crossZ * crossZ) / ball.inertia;
           const holdForce = slipMag / (h * Math.max(mobility, 1e-9));
           const friction = Math.min(mu * fn, holdForce);
-          if (friction >= mu * fn - 1e-12) slipSteps += 1; else stickSteps += 1;
+          if (friction >= mu * fn - 1e-12) contact.slipSteps += 1; else contact.stickSteps += 1;
           const ffX = -friction * dirT * tX;
           const ffY = -friction * dirY;
           const ffZ = -friction * dirT * tZ;
@@ -1012,54 +1047,66 @@
         }
         ball.vel.x += fx / ball.mass * h;
         ball.vel.z += fz / ball.mass * h;
-        if (fy < 0 && ball.posY <= 1e-9) downImpulse -= fy * h;
+        if (fy < 0 && ball.posY <= 1e-9) contact.downImpulse -= fy * h;
         else ball.velY += fy / ball.mass * h;
         ball.omega.x += torqueX / ball.inertia * h;
         ball.omega.y += torqueY / ball.inertia * h;
         ball.omega.z += torqueZ / ball.inertia * h;
         ball.pos.x += ball.vel.x * h;
         ball.pos.z += ball.vel.z * h;
-        contactTime += h;
+        consumed += h;
       }
-      const leftover = rewound - contactTime;
-      if (leftover > 0) {
-        ball.pos.x += ball.vel.x * leftover;
-        ball.pos.z += ball.vel.z * leftover;
+      contact.contactTime += consumed;
+      contact.stepStamp = this.time;
+      ball.state = 'sliding';
+      if (!engaged) {
+        // The rubber let go inside this step: spend the remaining rewound
+        // time ballistically, then report the whole episode.
+        const leftover = budget - consumed;
+        if (leftover > 0) {
+          ball.pos.x += ball.vel.x * leftover;
+          ball.pos.z += ball.vel.z * leftover;
+        }
+        this.finishRailContact(ball);
       }
+    }
+
+    finishRailContact(ball) {
+      const contact = ball.railContact;
+      ball.railContact = null;
       // Slate return of the nose-driven vertical impulse: a small hop that
       // only firm, fairly square impacts can excite through the cloth.
-      if (downImpulse > 0 && ball.posY <= 1e-9) {
-        const hop = 0.13 * downImpulse / ball.mass;
+      if (contact.downImpulse > 0 && ball.posY <= 1e-9) {
+        const hop = 0.13 * contact.downImpulse / ball.mass;
         if (hop > 0.24) ball.velY = Math.max(ball.velY, Math.min(hop, 0.9));
       }
-      ball.state = 'sliding';
 
       let english = 'neutral';
-      if (Math.abs(sideSurfaceSpeed) > 0.035) {
-        if (Math.abs(linearTangentSpeed) < 0.045) english = 'side';
-        else english = linearTangentSpeed * sideSurfaceSpeed < 0 ? 'running' : 'reverse';
+      if (Math.abs(contact.sideSurfaceSpeed) > 0.035) {
+        if (Math.abs(contact.linearTangentSpeed) < 0.045) english = 'side';
+        else english = contact.linearTangentSpeed * contact.sideSurfaceSpeed < 0 ? 'running' : 'reverse';
       }
-      const tX = -primary.nz, tZ = primary.nx;
-      const reboundNormal = ball.vel.x * primary.nx + ball.vel.z * primary.nz;
+      const tX = -contact.nz, tZ = contact.nx;
+      const reboundNormal = ball.vel.x * contact.nx + ball.vel.z * contact.nz;
       const reboundTangent = ball.vel.x * tX + ball.vel.z * tZ;
-      const incidentAngle = Math.atan2(Math.abs(linearTangentSpeed), Math.max(1e-7, approach)) * 180 / Math.PI;
+      const incidentAngle = Math.atan2(Math.abs(contact.linearTangentSpeed), Math.max(1e-7, contact.approach)) * 180 / Math.PI;
       const reboundAngle = Math.atan2(Math.abs(reboundTangent), Math.max(1e-7, reboundNormal)) * 180 / Math.PI;
       const event = {
-        type: 'cushion', ballId: ball.id, cushionId: primary.id, speed: Math.abs(approach),
-        impulse: ball.mass * (Math.max(0, approach) + Math.max(0, reboundNormal)),
-        position: { ...ball.pos }, normal: { x: primary.nx, z: primary.nz },
+        type: 'cushion', ballId: ball.id, cushionId: contact.id, speed: Math.abs(contact.approach),
+        impulse: ball.mass * (Math.max(0, contact.approach) + Math.max(0, reboundNormal)),
+        position: { ...ball.pos }, normal: { x: contact.nx, z: contact.nz },
         english,
-        frictionMode: slipSteps > stickSteps ? 'slide' : 'stick',
-        followRatio,
-        restitution: approach > 0.02 ? clamp(reboundNormal / approach, 0, 1) : 0,
-        compression: maxDepth, contactTime,
+        frictionMode: contact.slipSteps > contact.stickSteps ? 'slide' : 'stick',
+        followRatio: contact.followRatio,
+        restitution: contact.approach > 0.02 ? clamp(reboundNormal / contact.approach, 0, 1) : 0,
+        compression: contact.maxDepth, contactTime: contact.contactTime,
         incidentAngle, reboundAngle, angleChange: reboundAngle - incidentAngle,
-        incoming: { x: vin.x, z: vin.z },
+        incoming: { x: contact.vinX, z: contact.vinZ },
         outgoing: { x: ball.vel.x, z: ball.vel.z },
       };
       this.lastCushionEvent = event;
 
-      const key = `rail:${ball.id}:${primary.id}`;
+      const key = `rail:${ball.id}:${contact.id}`;
       const previous = this.collisionCooldown.get(key) || -1;
       if (this.time - previous > 0.035) {
         this.collisionCooldown.set(key, this.time);
@@ -1074,6 +1121,7 @@
       ball.sinkDepth = 0;
       ball.posY = 0;
       ball.velY = 0;
+      ball.railContact = null; // a mid-compression rattle can drop straight in
       ball.sinkTarget = { x: pocket.x, z: pocket.z };
       ball.vel.x *= 0.42; ball.vel.z *= 0.42;
       ball.omega.x *= 0.46; ball.omega.y *= 0.46; ball.omega.z *= 0.46;
@@ -1138,8 +1186,8 @@
       if (!clone.strike(options)) return { paths: new Map(), events: [], firstHit: null, cueDistance: 0, duration: 0 };
       const initial = new Map(clone.balls.map((b) => [b.id, { ...b.pos }]));
       const paths = new Map(clone.balls.map((b) => [b.id, [{ ...b.pos, t: 0 }]]));
-      const dt = 1 / 600;
-      const sampleEvery = 10;
+      const dt = 1 / 1000;
+      const sampleEvery = 16;
       // Aiming previews must never stall the pointer: cap the wall-clock cost
       // and truncate the far tail of worst-case (full-rack) predictions.
       const clock = typeof performance !== 'undefined' ? performance : Date;
@@ -1246,7 +1294,7 @@
       }
       if (!found) return false;
       ball.pos = found; ball.vel = { x: 0, z: 0 }; ball.omega = { x: 0, y: 0, z: 0 };
-      ball.posY = 0; ball.velY = 0;
+      ball.posY = 0; ball.velY = 0; ball.railContact = null;
       ball.rotation = Quat.identity(); ball.pocketed = false; ball.pocketId = null; ball.sinkTime = 0; ball.sinkDepth = 0; ball.sinkTarget = null; ball.state = 'stationary';
       return true;
     }

@@ -18,6 +18,15 @@
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => [...document.querySelectorAll(selector)];
 
+  // Slow motion trades nothing away: the physics step is BASE_STEP scaled by
+  // the playback rate, so every gear costs the same ~1000 steps per real
+  // second while the temporal resolution grows as the playback slows — at
+  // 1/100 the world integrates on a 10 µs grid and the cushion rubber can be
+  // watched compressing frame by frame.
+  const BASE_STEP = 1 / 1000;
+  const SLOW_MOTION_RATES = [1, 1 / 4, 1 / 20, 1 / 50, 1 / 100];
+  const SLOW_MOTION_LABELS = ['1×', '1/4', '1/20', '1/50', '1/100'];
+
   // Impact sounds are modal-synthesised: each hit excites a small bank of
   // exponentially decaying partials plus a short noise transient.  Phenolic
   // balls ring bright and fast (2–9 kHz, ~10–30 ms), harder hits excite the
@@ -179,7 +188,7 @@
       this.placementDrag = null;
       this.pullback = 0;
       this.paused = false;
-      this.slowMotion = false;
+      this.slowMotionRate = 1;
       this.guidesEnabled = true;
       this.gridEnabled = true;
       this.trailsEnabled = true;
@@ -251,6 +260,9 @@
           pitch: clamp((pitch ?? 40) * Math.PI / 180, 0.10, 1.50),
         };
       }
+      // ?slow=<4|20|50|100> shares a slow-motion gear (denominator form).
+      const slowDenominator = num('slow');
+      if (slowDenominator != null) this.setSlowMotionRate(1 / slowDenominator, true);
       if (params.get('place') === '1') this.togglePlacement();
       if (params.get('shoot') === '1') {
         // Optional t=<seconds> fast-forwards the shot so a shared link (or a
@@ -262,13 +274,12 @@
         this.sound.enabled = false;
         this.shoot();
         if (fastForward > 0 && this.world.inShot) {
-          // Same 600 Hz step and trail cadence as the live loop, so a shared
+          // Same 1 kHz step and trail cadence as the live loop, so a shared
           // link replays exactly what the interactive session would show.
-          const dt = 1 / 600;
-          for (let i = 0; i < fastForward * 600 && this.world.isMoving(); i += 1) {
-            this.world.step(dt);
+          for (let i = 0; i < fastForward / BASE_STEP && this.world.isMoving(); i += 1) {
+            this.world.step(BASE_STEP);
             this.trailFrame += 1;
-            if (this.trailsEnabled && this.trailFrame % 10 === 0) this.captureTrails();
+            if (this.trailsEnabled && this.trailFrame % 17 === 0) this.captureTrails();
           }
         }
         this.sound.enabled = soundWasEnabled;
@@ -367,11 +378,7 @@
 
       $('#undoButton').addEventListener('click', () => this.undo());
       $('#pauseButton').addEventListener('click', () => this.togglePause());
-      $('#slowButton').addEventListener('click', () => {
-        this.slowMotion = !this.slowMotion;
-        $('#slowButton').classList.toggle('active', this.slowMotion);
-        this.toast(this.slowMotion ? '慢动作：½ 倍速' : '恢复正常速度');
-      });
+      $('#slowButton').addEventListener('click', () => this.cycleSlowMotion());
 
       this.glCanvas.addEventListener('pointerdown', (event) => this.pointerDown(event));
       this.glCanvas.addEventListener('pointermove', (event) => this.pointerMove(event));
@@ -1064,6 +1071,27 @@
       $('#pauseButton span').textContent = value ? '继续' : '暂停';
     }
 
+    setSlowMotionRate(rate, quiet = false) {
+      const index = SLOW_MOTION_RATES.indexOf(rate);
+      if (index < 0) return;
+      this.slowMotionRate = rate;
+      const label = SLOW_MOTION_LABELS[index];
+      const slow = rate < 1;
+      $('#slowButton').classList.toggle('active', slow);
+      $('#slowButton .speed-glyph').textContent = label;
+      $('#physicsRate').textContent = `PHYSICS ${Math.round(1 / (rate * BASE_STEP) / 1000)} kHz`;
+      if (!quiet) {
+        this.toast(slow
+          ? `慢动作 ${label} · 物理步长细化到 ${rate * BASE_STEP * 1e6} µs`
+          : '实时速度 · 物理步长 1 ms');
+      }
+    }
+
+    cycleSlowMotion() {
+      const index = SLOW_MOTION_RATES.indexOf(this.slowMotionRate);
+      this.setSlowMotionRate(SLOW_MOTION_RATES[(index + 1) % SLOW_MOTION_RATES.length]);
+    }
+
     togglePause() {
       this.setPaused(!this.paused);
       this.toast(this.paused ? '模拟已暂停' : '继续模拟');
@@ -1133,18 +1161,22 @@
       const rawDelta = Math.min(0.05, (time - this.lastFrameTime) / 1000 || 0);
       this.lastFrameTime = time;
       this.applyKeyControls(rawDelta);
-      const timeScale = this.slowMotion ? 0.5 : 1;
       if (!this.paused) {
-        this.accumulator += rawDelta * timeScale;
-        // 600 Hz fixed step: at break speed a ball travels ~1 cm per step, so
-        // thin-cut contact times land within ~1.7 ms of the true instant.
-        const fixed = 1 / 600;
+        this.accumulator += rawDelta * this.slowMotionRate;
+        // The step shrinks with the playback rate, so a slower gear means a
+        // finer physics grid at a constant ~1000 steps per real second.
+        const fixed = this.slowMotionRate * BASE_STEP;
+        // Trails sample on simulated time (~16.7 ms), not on step count, so
+        // their density does not depend on the gear.
+        const captureEvery = Math.max(1, Math.round(1 / 60 / fixed));
         let steps = 0;
-        while (this.accumulator >= fixed && steps < 40) {
+        while (this.accumulator >= fixed && steps < 60) {
           this.world.step(fixed);
           this.accumulator -= fixed; steps += 1; this.trailFrame += 1;
-          if (this.trailsEnabled && this.trailFrame % 10 === 0) this.captureTrails();
+          if (this.trailsEnabled && this.trailFrame % captureEvery === 0) this.captureTrails();
         }
+        // A stalled tab dumps its backlog instead of death-spiralling.
+        if (steps === 60 && this.accumulator > fixed * 10) this.accumulator = 0;
       }
       if (this.pendingSettle) this.settleShot();
 
