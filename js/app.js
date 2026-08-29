@@ -210,6 +210,7 @@
       this.shotNumber = 1;
       this.rule = this.createRuleState('chineseEight');
       this.activeDrill = null;
+      this.defaultDrillHint = $('#drillHint').textContent;
       this.predictedRailEvent = null;
       this.pendingSettle = false;
       this.predictedShotDuration = 1;
@@ -377,12 +378,23 @@
       const assistMap = {
         assistTrajectory: 'trajectory', assistGhost: 'ghost', assistTangent: 'tangent', assistPocket: 'pocket',
       };
-      Object.entries(assistMap).forEach(([id, key]) => $(`#${id}`).addEventListener('change', (event) => { this.assists[key] = event.target.checked; }));
+      // The button label always names the action it will take next (enable
+      // whatever is off, otherwise disable everything), so it must follow every
+      // path that changes an assist — including the individual switches.
+      const updateAssistAllLabel = () => {
+        const anyOff = Object.values(this.assists).some((value) => !value);
+        $('#assistAll').textContent = anyOff ? '全部开启' : '全部关闭';
+      };
+      Object.entries(assistMap).forEach(([id, key]) => $(`#${id}`).addEventListener('change', (event) => {
+        this.assists[key] = event.target.checked;
+        updateAssistAllLabel();
+      }));
       $('#assistAll').addEventListener('click', () => {
         const shouldEnable = Object.values(this.assists).some((value) => !value);
         Object.entries(assistMap).forEach(([id, key]) => { this.assists[key] = shouldEnable; $(`#${id}`).checked = shouldEnable; });
-        $('#assistAll').textContent = shouldEnable ? '全部关闭' : '全部开启';
+        updateAssistAllLabel();
       });
+      updateAssistAllLabel();
 
       $('#undoButton').addEventListener('click', () => this.undo());
       $('#pauseButton').addEventListener('click', () => this.togglePause());
@@ -397,6 +409,32 @@
         event.preventDefault();
         this.renderer.setZoom(event.deltaY > 0 ? 1.08 : 0.93);
       }, { passive: false });
+      // A GPU reset fires webglcontextlost; without preventDefault the browser
+      // never restores the context and the table freezes silently.  The
+      // renderer owns no DOM listeners, so recovery is a fresh instance with
+      // the camera state carried over.
+      this.glCanvas.addEventListener('webglcontextlost', (event) => {
+        event.preventDefault();
+        this.setPaused(true);
+        this.toast('渲染上下文丢失，正在等待浏览器恢复…');
+      });
+      this.glCanvas.addEventListener('webglcontextrestored', () => {
+        try {
+          const old = this.renderer;
+          this.renderer = new BilliardsRenderer(this.glCanvas);
+          this.renderer.setTable(this.world.table);
+          this.renderer.setBallStyle(this.ballSkin);
+          this.renderer.cameraMode = old.cameraMode;
+          this.renderer.zoom = old.zoom;
+          this.renderer.orbit = old.orbit ? { ...old.orbit } : null;
+          this.renderer.updateCamera();
+          this.setPaused(false);
+          this.toast('渲染已恢复');
+        } catch (error) {
+          console.error(error);
+          $('#webglError').hidden = false;
+        }
+      });
 
       $('#placementToggle').addEventListener('click', () => this.togglePlacement());
       $('#trayClear').addEventListener('click', () => this.clearTableToTray());
@@ -480,7 +518,13 @@
     }
 
     pointerMove(event) {
+      // Chorded mouse buttons share one pointer: releasing one button while
+      // another stays held arrives as pointermove (pointerup only fires for
+      // the last button up).  Each drag therefore also ends here the moment
+      // its own button leaves the buttons bitmask — otherwise an orbit or a
+      // charge would outlive its button and stick to the bare hover.
       if (this.viewDrag && event.pointerId === this.viewDrag.pointerId) {
+        if ((event.buttons & 2) === 0) { this.endViewDrag(false); return; }
         const dx = event.clientX - this.viewDrag.x, dy = event.clientY - this.viewDrag.y;
         this.viewDrag.x = event.clientX; this.viewDrag.y = event.clientY;
         this.viewDrag.moved += Math.abs(dx) + Math.abs(dy);
@@ -488,10 +532,12 @@
         return;
       }
       if (this.placementDrag && event.pointerId === this.placementDrag.pointerId) {
+        if ((event.buttons & 1) === 0) { this.endPlacementDrag(false); return; }
         this.movePlacementBall(event);
         return;
       }
       if (this.drag && event.pointerId === this.drag.pointerId) {
+        if ((event.buttons & 1) === 0) { this.finishChargeDrag(false); return; }
         const cue = this.world.getCueBall();
         const centre = this.renderer.project({ x: cue.pos.x, y: cue.radius, z: cue.pos.z });
         const ahead = this.renderer.project({ x: cue.pos.x + this.aimDirection.x * 0.25, y: cue.radius, z: cue.pos.z + this.aimDirection.z * 0.25 });
@@ -509,14 +555,10 @@
     }
 
     pointerUp(event, cancelled = false) {
-      if (this.viewDrag && event.pointerId === this.viewDrag.pointerId && (event.button === 2 || cancelled)) {
-        const now = performance.now();
-        if (!cancelled && this.viewDrag.moved < 6 && now - this.lastRightUp < 380) {
-          if (this.renderer.resetOrbit()) this.toast('视角已复位');
-        }
-        this.lastRightUp = now;
-        this.viewDrag = null;
-        this.stage.classList.remove('orbiting');
+      // pointerup means every button is up, so whichever drag is still alive
+      // ends here regardless of which button happened to be released last.
+      if (this.viewDrag && event.pointerId === this.viewDrag.pointerId) {
+        this.endViewDrag(cancelled);
         return;
       }
       if (this.placementDrag && event.pointerId === this.placementDrag.pointerId) {
@@ -524,6 +566,20 @@
         return;
       }
       if (!this.drag || event.pointerId !== this.drag.pointerId) return;
+      this.finishChargeDrag(cancelled);
+    }
+
+    endViewDrag(cancelled) {
+      const now = performance.now();
+      if (!cancelled && this.viewDrag.moved < 6 && now - this.lastRightUp < 380) {
+        if (this.renderer.resetOrbit()) this.toast('视角已复位');
+      }
+      this.lastRightUp = now;
+      this.viewDrag = null;
+      this.stage.classList.remove('orbiting');
+    }
+
+    finishChargeDrag(cancelled) {
       const shouldShoot = !cancelled && this.drag.moved > 11;
       this.drag = null; this.pullback = 0; this.stage.classList.remove('charging');
       if (shouldShoot) this.shoot();
@@ -604,6 +660,7 @@
       if (this.placement) {
         if (this.paused) this.setPaused(false); // dragging needs the live loop
         this.prediction = null;
+        this.clearPredictionMetrics();
         this.undoStack.length = 0;
         this.actualTrails.clear();
         this.renderBallTray();
@@ -611,6 +668,10 @@
         $('#statusText').textContent = '左键拖球摆位;拖入袋口收进托盘;点托盘放回';
         this.toast('摆球模式:自由拖动母球与彩球;再按 B 或按钮完成布局');
       } else {
+        // The rearranged table is no longer the drill's fixed layout: keep the
+        // drill marked active and every shot would still settle through the
+        // drill branch, never scoring or passing the turn.
+        this.clearDrillSelection();
         this.rule = this.createRuleState(this.world.mode);
         this.shotRecord = this.emptyShotRecord();
         this.updateAllUI();
@@ -626,6 +687,12 @@
       $('#placementToggle').classList.remove('active');
       $('#ballTray').hidden = true;
       this.stage.classList.remove('placing');
+    }
+
+    clearDrillSelection() {
+      this.activeDrill = null;
+      $$('[data-drill]').forEach((button) => button.classList.remove('active'));
+      $('#drillHint').textContent = this.defaultDrillHint;
     }
 
     renderBallTray() {
@@ -1041,14 +1108,13 @@
         return;
       }
       this.exitPlacementSilently();
-      this.activeDrill = null;
-      $$('[data-drill]').forEach((button) => button.classList.remove('active'));
+      this.clearDrillSelection();
       this.world.setMode(mode);
       this.applyBallSkinColors();
       this.renderer.setTable(this.world.table);
       this.rule = this.createRuleState(mode);
       this.shotNumber = 1; this.undoStack.length = 0; this.actualTrails.clear(); this.effects.length = 0;
-      this.aimDirection = { x: 1, z: 0 };
+      this.aimDirection = { x: 1, z: 0 }; this.setPaused(false);
       this.world.setClothPreset($('#clothPreset').value);
       this.schedulePrediction(true); this.updateAllUI();
       this.toast(`${$('#gameMode').selectedOptions[0].text} · 已完成摆球`);
@@ -1057,8 +1123,7 @@
     resetRack() {
       const mode = this.world.mode;
       this.exitPlacementSilently();
-      this.activeDrill = null;
-      $$('[data-drill]').forEach((button) => button.classList.remove('active'));
+      this.clearDrillSelection();
       this.world.reset(mode);
       this.world.setClothPreset($('#clothPreset').value);
       this.applyBallSkinColors();
@@ -1070,11 +1135,20 @@
     }
 
     undo() {
-      if (this.world.isMoving()) { this.toast('请先暂停或等待球静止'); return; }
+      // Mid-flight undo is allowed once the simulation is paused — which is
+      // exactly what the toast advises.  The snapshot predates the strike, so
+      // restoring it aborts the flight; the shot record and any pending settle
+      // belong to that aborted shot and must go with it, and the table comes
+      // back stationary, so aiming resumes immediately instead of staying
+      // frozen behind the pause.
+      if (this.world.isMoving() && !this.paused) { this.toast('请先暂停或等待球静止'); return; }
       const snapshot = this.undoStack.pop();
       if (!snapshot) { this.toast('暂无可撤销的击球'); return; }
       this.world.restore(snapshot.world); this.rule = snapshot.rule; this.shotNumber = snapshot.shotNumber; this.aimDirection = snapshot.aimDirection;
       this.applyBallSkinColors();
+      this.shotRecord = this.emptyShotRecord();
+      this.pendingSettle = false;
+      this.setPaused(false);
       this.actualTrails.clear(); this.effects.length = 0; this.schedulePrediction(true); this.updateAllUI(); this.toast('已撤销上一杆');
     }
 
@@ -1136,7 +1210,7 @@
       this.guidesEnabled = !this.guidesEnabled;
       $('#guideToggle').classList.toggle('active', this.guidesEnabled);
       if (this.guidesEnabled) this.schedulePrediction(true);
-      else this.prediction = null;
+      else { this.prediction = null; this.clearPredictionMetrics(); }
     }
 
     openHelp() {
@@ -1172,6 +1246,15 @@
       this.lastPredictionAt = performance.now();
       this.prediction = this.world.predictShot(this.shotOptions());
       this.updatePredictionMetrics();
+    }
+
+    // Metrics echo the prediction; whenever the prediction is switched off
+    // rather than recomputed, the readouts must blank instead of freezing at
+    // the last aim's numbers.
+    clearPredictionMetrics() {
+      this.predictedRailEvent = null;
+      ['#firstHitMetric', '#cutAngleMetric', '#pathMetric', '#railEffectMetric', '#allowanceMetric']
+        .forEach((id) => { $(id).textContent = '—'; });
     }
 
     updatePredictionMetrics() {
@@ -1586,10 +1669,13 @@
     }
 
     updateAllUI() {
-      this.updatePowerUI(); this.updateElevationUI(); this.updateSpinUI(); this.updateEquipmentHint(); this.updateScoreboard(); this.updateMotionUI(this.world.isMoving());
+      // Selects first: the world is the source of truth (undo restores cloth,
+      // cue and tip physics), and updateEquipmentHint reads their labels.
       $('#gameMode').value = this.world.mode;
       $('#cueType').value = this.world.cueType;
       $('#tipType').value = this.world.tipType;
+      $('#clothPreset').value = this.world.clothPreset;
+      this.updatePowerUI(); this.updateElevationUI(); this.updateSpinUI(); this.updateEquipmentHint(); this.updateScoreboard(); this.updateMotionUI(this.world.isMoving());
     }
 
     updateFps(time) {

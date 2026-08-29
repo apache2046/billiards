@@ -664,4 +664,60 @@ function throwRig({ objectZ = 0, sideSpin = 0, roll = 0, speed = 1.5 }) {
   assert.ok(cue.pos.x > object.pos.x + 0.05, 'cue ball should come down beyond the cleared ball');
 }
 
+// Two balls arriving at the same cushion about a step apart put one ball
+// inside a live rubber episode while the other collides with it.  The pair
+// solver must not move an episode ball (TOI rewind, overlap relaxation or
+// fresh-contact rewind): any teleport into the rubber becomes free spring
+// energy on the push-off.  Across step sizes and arrival phases the system
+// must never gain energy.
+{
+  const sandwich = (dt, gap) => {
+    const world = new PhysicsWorld('practice', { silent: true });
+    const leader = world.getBall('1'), follower = world.getCueBall();
+    world.balls = [leader, follower];
+    const R = leader.radius;
+    leader.pos = { x: 0.3, z: world.table.height / 2 - R - 0.004 };
+    leader.vel = { x: 0, z: 2 }; leader.state = 'sliding';
+    follower.pos = { x: 0.3, z: leader.pos.z - (2 * R + gap) };
+    follower.vel = { x: 0, z: 4 }; follower.state = 'sliding';
+    const energyBefore = world.totalEnergy();
+    let maxEnergy = 0;
+    for (let i = 0, total = Math.round(0.05 / dt); i < total; i += 1) {
+      world.step(dt);
+      maxEnergy = Math.max(maxEnergy, world.totalEnergy());
+    }
+    return maxEnergy / energyBefore;
+  };
+  for (const dt of [1 / 600, 1 / 1000, 1 / 4000]) {
+    for (const gap of [0.003, 0.004, 0.005, 0.006, 0.008]) {
+      const ratio = sandwich(dt, gap);
+      assert.ok(ratio <= 1.005,
+        `rail sandwich created energy: maxE/E0=${ratio.toFixed(3)} at dt=1/${Math.round(1 / dt)}, gap=${gap * 1000} mm`);
+    }
+  }
+}
+
+// The settled event is the commit point for rules, undo and the next aim: it
+// must not fire while a cushion episode still holds the ball, or the position
+// everything locks onto is one the rubber is about to change.
+{
+  const world = new PhysicsWorld('chineseEight', { silent: true });
+  const cue = world.getCueBall(); world.balls = [cue];
+  cue.pos = { x: 0.3, z: world.table.height / 2 - cue.radius - 0.001 };
+  cue.vel = { x: 0, z: 0.05 }; cue.state = 'sliding';
+  world.inShot = true;
+  let settledPosition = null, settledDuringContact = false;
+  world.onEvent((event) => {
+    if (event.type === 'settled' && settledPosition == null) {
+      settledPosition = cue.pos.z;
+      settledDuringContact = Boolean(cue.railContact);
+    }
+  });
+  for (let i = 0; i < 300; i += 1) world.step(1 / 1000);
+  assert.ok(settledPosition != null, 'slow rail touch never settled');
+  assert.equal(settledDuringContact, false, 'settled fired while the cushion episode was still active');
+  assert.ok(Math.abs(cue.pos.z - settledPosition) < 2e-4,
+    `ball moved a further ${((cue.pos.z - settledPosition) * 1000).toFixed(2)} mm after settled`);
+}
+
 console.log('CueLab physics smoke tests passed.');

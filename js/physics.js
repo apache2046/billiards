@@ -597,7 +597,8 @@
 
     isMoving() {
       return this.balls.some((b) => !b.pocketed && (
-        Math.hypot(b.vel.x, b.vel.z) > 0.005
+        b.railContact != null
+        || Math.hypot(b.vel.x, b.vel.z) > 0.005
         || Math.hypot(b.omega.x, b.omega.y, b.omega.z) > 0.85
         || b.posY > 1e-4 || Math.abs(b.velY) > 0.05
       ));
@@ -677,8 +678,10 @@
           // state once per step and make the outcome depend on step size.
           this.evolveBall(ball, dt);
         }
-        ball.pos.x += ball.vel.x * dt;
-        ball.pos.z += ball.vel.z * dt;
+        if (!ball.railContact) {
+          ball.pos.x += ball.vel.x * dt;
+          ball.pos.z += ball.vel.z * dt;
+        }
         Quat.integrate(ball.rotation, ball.omega, dt);
       }
 
@@ -793,7 +796,7 @@
           const closing = dx * rvx + dz * rvz;
           const relSpeedSq = rvx * rvx + rvz * rvz;
           let toi = 0;
-          if (closing < -1e-9 && relSpeedSq > 1e-12) {
+          if (closing < -1e-9 && relSpeedSq > 1e-12 && !a.railContact && !b.railContact) {
             const discriminant = closing * closing - relSpeedSq * (distanceSq - minDistance * minDistance);
             if (discriminant > 0) {
               toi = Math.min(dt, (closing + Math.sqrt(discriminant)) / relSpeedSq);
@@ -812,9 +815,13 @@
           const invA = 1 / a.mass, invB = 1 / b.mass;
           if (toi === 0) {
             // Slow squeezes and rack clusters keep the positional relaxation.
+            // A ball owned by a cushion episode must not be teleported into the
+            // rubber: free compression would become free spring energy.
             const correction = Math.max(0, minDistance - distance + 1e-5) / (invA + invB) * 0.76;
-            a.pos.x -= nx * correction * invA; a.pos.z -= nz * correction * invA;
-            b.pos.x += nx * correction * invB; b.pos.z += nz * correction * invB;
+            const shiftA = a.railContact ? 0 : (b.railContact ? correction * (invA + invB) : correction * invA);
+            const shiftB = b.railContact ? 0 : (a.railContact ? correction * (invA + invB) : correction * invB);
+            a.pos.x -= nx * shiftA; a.pos.z -= nz * shiftA;
+            b.pos.x += nx * shiftB; b.pos.z += nz * shiftB;
           }
 
           const relNormal = (b.vel.x - a.vel.x) * nx + (b.vel.z - a.vel.z) * nz;
@@ -908,8 +915,6 @@
         // ballistic advance — which on a restituting ball can overshoot the
         // shallow remaining compression and would silently discard the energy
         // still stored in the spring — and let the rubber finish its push-off.
-        ball.pos.x -= ball.vel.x * dt;
-        ball.pos.z -= ball.vel.z * dt;
         this.integrateRailContact(ball, dt, dt);
         return;
       }
@@ -930,7 +935,7 @@
       // Rewind to the true first-touch point, keeping ~10 µm of engagement so
       // the first sub-step still sees the contact it is about to compress; a
       // penetration older than this step claims the whole step instead.
-      const timeToTouch = approach > 1e-9 ? (primary.depth - 1e-5) / approach : Infinity;
+      const timeToTouch = approach > 1e-9 ? (primary.depth - 1e-5) / approach : 0;
       const rewound = clamp(Math.min(dt, timeToTouch), 0, dt);
       ball.pos.x -= ball.vel.x * rewound;
       ball.pos.z -= ball.vel.z * rewound;
