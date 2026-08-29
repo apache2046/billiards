@@ -172,7 +172,7 @@ function grazeTangent(jawId, straightSide) {
 // preset.  Harder leather also exposes a smaller chalk/friction-safe hit zone.
 {
   const world = new PhysicsWorld('chineseEight', { silent: true });
-  const shot = { direction: { x: 1, z: 0 }, speed: 4, tipX: 0.68, tipY: 0.18, elevation: 4 };
+  const shot = { direction: { x: 1, z: 0 }, speed: 4, tipX: 0.42, tipY: 0.15, elevation: 4 };
   world.setCueType('small'); world.setTipType('medium');
   const small = world.cueImpactMetrics(shot);
   world.setCueType('large');
@@ -325,7 +325,7 @@ function cushionRig({ sideSpin = 0, topSpin = null }) {
 function lateralAtOnePointTwoMetres(elevation) {
   const world = new PhysicsWorld('chineseEight', { silent: true });
   const cue = world.getCueBall(); world.balls = [cue]; cue.pos = { x: -0.8, z: 0 };
-  world.strike({ direction: { x: 1, z: 0 }, speed: 3, tipX: 0.65, tipY: 0, elevation });
+  world.strike({ direction: { x: 1, z: 0 }, speed: 3, tipX: 0.45, tipY: 0, elevation });
   for (let i = 0; i < 1000 && cue.pos.x < 0.4; i += 1) world.step(1 / 300);
   return cue.pos.z;
 }
@@ -607,19 +607,26 @@ function throwRig({ objectZ = 0, sideSpin = 0, roll = 0, speed = 1.5 }) {
   assert.ok(outSpeed > 0.3, 'facing rebound lost the normal direction');
 }
 
-// Beyond the chalk limit the tip skids off: a miscue keeps under half the
-// speed, under half the spin, and roughly doubles the squirt angle.
+// The miscue boundary sits near the measured "half the radius" (Dr Dave; the
+// chalk friction cone gives b/R = μ/√(1+μ²)).  Beyond it the tip skids off:
+// a miscue keeps under half the speed, under half the spin, and roughly
+// doubles the squirt angle.
 {
   const world = new PhysicsWorld('chineseEight', { silent: true });
   world.setTipType('hard');
   const options = { direction: { x: 1, z: 0 }, speed: 4, tipY: 0, elevation: 0 };
-  const clean = world.cueImpactMetrics({ ...options, tipX: 0.6 });
-  const bad = world.cueImpactMetrics({ ...options, tipX: 0.895 });
+  const clean = world.cueImpactMetrics({ ...options, tipX: 0.42 });
+  const bad = world.cueImpactMetrics({ ...options, tipX: 0.56 });
+  assert.ok(clean.safeOffset > 0.46 && clean.safeOffset < 0.56,
+    `miscue limit ${clean.safeOffset.toFixed(3)} drifted from the measured ~0.5R boundary`);
   assert.equal(clean.miscue, false);
   assert.equal(bad.miscue, true);
   assert.ok(bad.horizontalSpeed < clean.horizontalSpeed * 0.45, 'miscue kept too much speed');
   assert.ok(Math.abs(bad.omega.y) < Math.abs(clean.omega.y) * 0.35, 'miscue kept too much spin');
   assert.ok(Math.abs(bad.squirt) > Math.abs(clean.squirt), 'miscue should deflect more, not less');
+  world.setTipType('soft');
+  const softLimit = world.cueImpactMetrics({ ...options, tipX: 0.2 }).safeOffset;
+  assert.ok(softLimit > clean.safeOffset, 'stickier soft leather should hold slightly beyond a hard tip');
 }
 
 // An elevated firm stroke drives the ball into the slate and it rebounds

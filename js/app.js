@@ -1,9 +1,14 @@
 (function () {
   'use strict';
 
-  const { PhysicsWorld } = window.BilliardsPhysics;
+  const { PhysicsWorld, POOL_COLORS, PALLADIUM_COLORS } = window.BilliardsPhysics;
   const { BilliardsRenderer } = window.BilliardsRenderer;
   const { V2, clamp } = window.BilliardsMath;
+
+  const BALL_SKINS = {
+    tv: { label: 'TV 高清经典', colors: POOL_COLORS, cueColor: '#f0f3eb' },
+    palladium: { label: 'Palladium 三叶徽章', colors: PALLADIUM_COLORS, cueColor: '#f2e9d2' },
+  };
 
   // Hold-to-adjust keys are integrated per frame for smooth, fine control:
   // WASD moves the tip contact point, Q/E scales cue speed, Z/C trims the
@@ -186,6 +191,7 @@
       this.lastRightUp = 0;
       this.placement = false;
       this.placementDrag = null;
+      this.ballSkin = 'tv';
       this.pullback = 0;
       this.paused = false;
       this.slowMotionRate = 1;
@@ -263,6 +269,8 @@
       // ?slow=<4|20|50|100> shares a slow-motion gear (denominator form).
       const slowDenominator = num('slow');
       if (slowDenominator != null) this.setSlowMotionRate(1 / slowDenominator, true);
+      const skin = params.get('skin');
+      if (skin) this.setBallSkin(skin, true);
       if (params.get('place') === '1') this.togglePlacement();
       if (params.get('shoot') === '1') {
         // Optional t=<seconds> fast-forwards the shot so a shared link (or a
@@ -392,6 +400,7 @@
 
       $('#placementToggle').addEventListener('click', () => this.togglePlacement());
       $('#trayClear').addEventListener('click', () => this.clearTableToTray());
+      $('#ballSkin').addEventListener('change', (event) => this.setBallSkin(event.target.value));
 
       window.addEventListener('keydown', (event) => {
         // Global shortcuts must survive a click on any panel control: only a
@@ -973,6 +982,7 @@
       this.exitPlacementSilently();
       if (this.world.mode !== 'chineseEight') this.world.setMode('chineseEight');
       else this.world.reset('chineseEight');
+      this.applyBallSkinColors();
       this.world.setCueType($('#cueType').value);
       this.world.setTipType($('#tipType').value);
       this.world.setClothPreset($('#clothPreset').value);
@@ -998,12 +1008,12 @@
         },
         english: {
           cue: { x: -0.50, z: -0.27 }, aim: V2.normalize({ x: 0.50, z: 1 }),
-          spin: { x: -0.55, y: 0 }, power: 0.48, elevation: 3,
+          spin: { x: -0.45, y: 0 }, power: 0.48, elevation: 3,
           hint: '当前是左塞顺塞。击打一杆后撤销，只改成右塞再打；对照首库“入/出角”和让点读数。',
         },
         follow: {
           cue: { x: -0.55, z: 0 }, aim: { x: 1, z: 0 },
-          spin: { x: 0, y: 0.72 }, power: 0.58, elevation: 2,
+          spin: { x: 0, y: 0.45 }, power: 0.58, elevation: 2,
           hint: '高杆正撞短库。先打高杆，再撤销改定杆/低杆，比较库后速度、回旋残量与停止距离。',
         },
       };
@@ -1034,6 +1044,7 @@
       this.activeDrill = null;
       $$('[data-drill]').forEach((button) => button.classList.remove('active'));
       this.world.setMode(mode);
+      this.applyBallSkinColors();
       this.renderer.setTable(this.world.table);
       this.rule = this.createRuleState(mode);
       this.shotNumber = 1; this.undoStack.length = 0; this.actualTrails.clear(); this.effects.length = 0;
@@ -1050,6 +1061,7 @@
       $$('[data-drill]').forEach((button) => button.classList.remove('active'));
       this.world.reset(mode);
       this.world.setClothPreset($('#clothPreset').value);
+      this.applyBallSkinColors();
       this.renderer.setTable(this.world.table);
       this.rule = this.createRuleState(mode); this.shotNumber = 1;
       this.undoStack.length = 0; this.actualTrails.clear(); this.effects.length = 0;
@@ -1062,6 +1074,7 @@
       const snapshot = this.undoStack.pop();
       if (!snapshot) { this.toast('暂无可撤销的击球'); return; }
       this.world.restore(snapshot.world); this.rule = snapshot.rule; this.shotNumber = snapshot.shotNumber; this.aimDirection = snapshot.aimDirection;
+      this.applyBallSkinColors();
       this.actualTrails.clear(); this.effects.length = 0; this.schedulePrediction(true); this.updateAllUI(); this.toast('已撤销上一杆');
     }
 
@@ -1069,6 +1082,28 @@
       this.paused = value;
       $('#pauseButton').classList.toggle('paused', value);
       $('#pauseButton span').textContent = value ? '继续' : '暂停';
+    }
+
+    setBallSkin(skin, quiet = false) {
+      if (!BALL_SKINS[skin]) return;
+      this.ballSkin = skin;
+      $('#ballSkin').value = skin;
+      this.renderer.setBallStyle(skin);
+      this.applyBallSkinColors();
+      this.schedulePrediction(true);
+      if (!quiet) this.toast(`球组外观：${BALL_SKINS[skin].label}`);
+    }
+
+    // Recolour the live rack to the active skin.  Ball colours are plain data
+    // on the balls (racking copies them from the default palette), so this
+    // runs after every re-rack, mode change, drill load and undo restore.
+    applyBallSkinColors() {
+      const skin = BALL_SKINS[this.ballSkin] || BALL_SKINS.tv;
+      this.world.balls.forEach((ball) => {
+        if (ball.kind === 'cue') ball.color = skin.cueColor;
+        else if (ball.number != null && skin.colors[ball.number]) ball.color = skin.colors[ball.number];
+      });
+      if (this.placement) this.renderBallTray();
     }
 
     setSlowMotionRate(rate, quiet = false) {

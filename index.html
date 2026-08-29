@@ -179,11 +179,11 @@
             </div>
 
             <div class="presets" aria-label="常用杆法">
-              <button type="button" data-spin="0,0.72">高杆</button>
+              <button type="button" data-spin="0,0.45">高杆</button>
               <button type="button" data-spin="0,0">定杆</button>
-              <button type="button" data-spin="0,-0.72">低杆</button>
-              <button type="button" data-spin="-0.62,0">左塞</button>
-              <button type="button" data-spin="0.62,0">右塞</button>
+              <button type="button" data-spin="0,-0.45">低杆</button>
+              <button type="button" data-spin="-0.42,0">左塞</button>
+              <button type="button" data-spin="0.42,0">右塞</button>
             </div>
           </section>
 
@@ -250,6 +250,9 @@
             <div class="physics-row">
               <label class="select-shell full"><span>台呢速度</span><select id="clothPreset"><option value="fast">比赛快台</option><option value="standard" selected>标准台呢</option><option value="slow">慢速绒布</option></select></label>
             </div>
+            <div class="physics-row">
+              <label class="select-shell full"><span>球组外观</span><select id="ballSkin"><option value="tv" selected>TV 高清经典</option><option value="palladium">Palladium 三叶徽章</option></select></label>
+            </div>
             <p class="equipment-hint" id="equipmentHint">乔氏金腿式赛事台 · 中式比赛级顺毛台呢 · 小头低偏移杆 / 中等皮头</p>
             <div class="telemetry-grid">
               <div><small>母球速度</small><strong id="speedValue">0.00</strong><span>m/s</span></div>
@@ -302,7 +305,7 @@
       </div>
       <div class="physics-note">
         <div><span>模型范围</span><strong>库边橡胶压缩接触 + 摩擦锥 + 顺毛台呢</strong></div>
-        <p>默认结合乔氏 Q8 金腿公开结构与中式赛事级器材数据标定：中式球规格、钢库圆弧袋角、85 mm 角袋 / 100 mm 中袋（袋角圆弧最窄处，中袋按台协规则比角袋宽 15 mm）、42 mm 库高与顺毛台呢。球杆模型考虑前端有效质量、皮头摩擦、Cross 刚性冲量初始偏移公式和抬杆回弯。库边按 Hunt-Crossley 压缩-阻尼接触在毫秒尺度上细分积分：回弹系数随球速自然衰减，摩擦滑移在接触过程中连续演化，压缩深度与接触时长实时显示；品牌未公开的胶条截面、配方和安装批次只能做可重复的赛事级近似，不能替代实台测量。</p>
+        <p>默认结合乔氏 Q8 金腿公开结构与中式赛事级器材数据标定：中式球规格、钢库圆弧袋角、85 mm 角袋 / 100 mm 中袋（袋角圆弧最窄处，中袋按台协规则比角袋宽 15 mm）、42 mm 库高与顺毛台呢。球杆模型考虑前端有效质量、皮头摩擦、Cross 刚性冲量初始偏移公式与抬杆回弯，疵杆极限按实测标定在约半个球半径。库边按 Hunt-Crossley 压缩-阻尼接触在毫秒尺度上细分积分，并含压入石板的第二受载摩擦点（Mathavan 双接触）：回弹系数随球速自然衰减，摩擦滑移在接触过程中连续演化，压缩深度与接触时长实时显示；慢动作档位越深，接触积分网格越细。品牌未公开的胶条截面、配方和安装批次只能做可重复的赛事级近似，不能替代实台测量。</p>
       </div>
       <div class="shortcuts">
         <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 微调打点</span>

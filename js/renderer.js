@@ -425,6 +425,7 @@
       this.cssWidth = 1;
       this.cssHeight = 1;
       this.devicePixelRatio = 1;
+      this.ballStyle = 'tv';
       gl.enable(gl.DEPTH_TEST);
       gl.depthFunc(gl.LEQUAL);
       gl.enable(gl.CULL_FACE);
@@ -843,14 +844,93 @@
       return texture;
     }
 
+    setBallStyle(style) {
+      this.ballStyle = style === 'palladium' ? 'palladium' : 'tv';
+    }
+
+    // Rounded tri-lobe "rotor" path — the Palladium signature shape:
+    // r(θ) = r0·(1 + a·cos(3(θ − 90°))) balloons three lobes with gently
+    // pinched sides.  stretchX widens the path to compensate the
+    // equirectangular longitude compression away from the equator.
+    traceTriLobe(ctx, cx, cy, r0, a, stretchX = 1) {
+      ctx.beginPath();
+      for (let i = 0; i <= 72; i += 1) {
+        const theta = i / 72 * Math.PI * 2;
+        const r = r0 * (1 + a * Math.cos(3 * (theta - Math.PI / 2)));
+        const x = cx + Math.cos(theta) * r * stretchX;
+        const y = cy + Math.sin(theta) * r;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+    }
+
+    // Dynaspheres Palladium-inspired look, recreated from the manufacturer's
+    // product photography: a large ivory tri-lobe badge with a heavy ink
+    // contour instead of a number circle, stripes reduced to two colour caps
+    // over a wide ivory band, an outline-only badge on the 8, and an ivory
+    // cue ball carrying six small rotor marks.
+    paintPalladiumBall(ctx, ball) {
+      const W = 512, H = 256;
+      const ivory = '#f2e9d2', badgeFill = '#efe7cd', ink = '#1a181b';
+      const eight = ball.number === 8;
+      if (ball.kind === 'cue') {
+        ctx.fillStyle = ivory;
+        ctx.fillRect(0, 0, W, H);
+        // Three rotor marks per hemisphere at ±35° latitude: a spin read from
+        // any side without the polar smearing of the equirectangular map.
+        ctx.fillStyle = ink;
+        [[0, 35], [120, 35], [240, 35], [60, -35], [180, -35], [300, -35]].forEach(([lon, lat]) => {
+          const x = lon / 360 * W, y = (90 - lat) / 180 * H;
+          this.traceTriLobe(ctx, x, y, 8.5, 0.24, 1 / Math.cos(lat * Math.PI / 180));
+          ctx.fill();
+          if (lon === 0) { // seam copy so the mark at longitude 0 wraps cleanly
+            this.traceTriLobe(ctx, x + W, y, 8.5, 0.24, 1 / Math.cos(lat * Math.PI / 180));
+            ctx.fill();
+          }
+        });
+        return;
+      }
+      ctx.fillStyle = ball.kind === 'stripe' ? ivory : ball.color;
+      ctx.fillRect(0, 0, W, H);
+      if (ball.kind === 'stripe') {
+        // Colour lives in two polar caps beyond ±42° latitude; the wide ivory
+        // band owns the equator and carries the badge directly.
+        ctx.fillStyle = ball.color;
+        ctx.fillRect(0, 0, W, 68);
+        ctx.fillRect(0, 188, W, H - 188);
+      }
+      [128, 384].forEach((cx) => {
+        this.traceTriLobe(ctx, cx, 128, 47, 0.22);
+        if (!eight) { ctx.fillStyle = badgeFill; ctx.fill(); }
+        ctx.strokeStyle = eight ? ivory : ink;
+        ctx.lineWidth = 8;
+        ctx.lineJoin = 'round';
+        ctx.stroke();
+        if (ball.number != null) {
+          ctx.fillStyle = eight ? ivory : ink;
+          ctx.font = '800 50px "Arial Rounded MT Bold", Nunito, Arial, sans-serif';
+          ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+          ctx.fillText(String(ball.number), cx, 126);
+          // The 6 and 9 carry the set's orientation underline.
+          if (ball.number === 6 || ball.number === 9) ctx.fillRect(cx - 15, 153, 30, 5);
+        }
+      });
+    }
+
     getBallTexture(ball) {
-      // The painted texture depends only on kind/number/colour, so numberless
-      // balls (snooker's fifteen reds) all share one cached texture.
-      const key = `${ball.kind}:${ball.number ?? ''}:${ball.color}`;
+      // The painted texture depends only on style/kind/number/colour, so
+      // numberless balls (snooker's fifteen reds) all share one cached texture.
+      const key = `${this.ballStyle}:${ball.kind}:${ball.number ?? ''}:${ball.color}`;
       if (this.textures.has(key)) return this.textures.get(key);
       const canvas = document.createElement('canvas');
       canvas.width = 512; canvas.height = 256;
       const ctx = canvas.getContext('2d');
+      if (this.ballStyle === 'palladium' && (ball.kind === 'cue' || ball.kind === 'solid' || ball.kind === 'stripe')) {
+        this.paintPalladiumBall(ctx, ball);
+        const texture = this.uploadCanvasTexture(canvas, false);
+        this.textures.set(key, texture);
+        return texture;
+      }
       const white = '#f8f7ef';
       ctx.fillStyle = ball.kind === 'stripe' || ball.kind === 'cue' ? white : ball.color;
       ctx.fillRect(0, 0, canvas.width, canvas.height);

@@ -41,16 +41,18 @@
 
   // Tip diameter and effective front-end mass are kept separate: tip size changes
   // usable contact geometry, while front-end mass is the dominant squirt control.
+  // maxOffset is the tip-separation bound of TP A-30 (x/R ≈ 0.45–0.55, tighter
+  // for the heavier cue); the chalk-friction cone usually binds first.
   const CUE_SPECS = Object.freeze({
     small: Object.freeze({
       id: 'small', label: '小头杆', detail: '中式低偏移木前节', tipDiameter: 0.010, shaftRadius: 0.0061,
       cueMass: 0.515, effectiveEndMass: 0.0052, spinEfficiency: 0.98,
-      maxOffset: 0.90, powerEfficiency: 0.985,
+      maxOffset: 0.54, powerEfficiency: 0.985,
     }),
     large: Object.freeze({
       id: 'large', label: '大头杆', detail: '高性能低偏移前节', tipDiameter: 0.0125, shaftRadius: 0.0073,
       cueMass: 0.535, effectiveEndMass: 0.0064, spinEfficiency: 0.96,
-      maxOffset: 0.88, powerEfficiency: 1.0,
+      maxOffset: 0.52, powerEfficiency: 1.0,
     }),
   });
 
@@ -66,23 +68,29 @@
   // rebounds at that table's restitutionCushion, after which restitution
   // falling with speed emerges from the model instead of a hand curve.
   const CUSHION_STIFFNESS = 1.5e7;   // N·m^-1.5
-  const CUSHION_DAMPING_REF = 0.127; // s/m at restitution 0.82 (calibrated in tests)
+  // Rubber's own loss channel; calibrated so that together with the loaded
+  // slate-friction contact (Mathavan 2010) a 2.5 m/s stun impact rebounds at
+  // the table's restitutionCushion.
+  const CUSHION_DAMPING_REF = 0.085; // s/m at restitution 0.82
   // Contact sub-grid ceiling; the effective grid is min(this, dt), so the
   // refined steps used in slow motion sharpen the contact integration too.
   const CUSHION_SUBSTEP = 1 / 14400;
 
+  // safeOffset is the tip-shape/hold bound; combined with the chalk-friction
+  // cone it puts the miscue limit at b/R ≈ 0.50–0.54, matching Dr Dave's
+  // measured "about half the radius" boundary (robust across chalk brands).
   const TIP_PRESETS = Object.freeze({
     soft: Object.freeze({
       id: 'soft', label: '软皮头', friction: 0.72,
-      energyEfficiency: 0.982, spinTransfer: 1.015, safeOffset: 0.91,
+      energyEfficiency: 0.982, spinTransfer: 1.015, safeOffset: 0.55,
     }),
     medium: Object.freeze({
       id: 'medium', label: '中等皮头', friction: 0.68,
-      energyEfficiency: 0.990, spinTransfer: 1.0, safeOffset: 0.89,
+      energyEfficiency: 0.990, spinTransfer: 1.0, safeOffset: 0.53,
     }),
     hard: Object.freeze({
       id: 'hard', label: '硬皮头', friction: 0.63,
-      energyEfficiency: 0.996, spinTransfer: 0.975, safeOffset: 0.86,
+      energyEfficiency: 0.996, spinTransfer: 0.975, safeOffset: 0.50,
     }),
   });
 
@@ -167,6 +175,16 @@
     5: '#ed812d', 6: '#278459', 7: '#873b38', 8: '#141817',
     9: '#edc83d', 10: '#2c69ce', 11: '#d54842', 12: '#7a4da5',
     13: '#ed812d', 14: '#278459', 15: '#873b38',
+  };
+
+  // Dynaspheres Palladium-inspired palette, sampled from the manufacturer's
+  // product photography: golden amber, azure, lavender, vermilion, spruce
+  // teal and caramel brown on warm ivory resin.
+  const PALLADIUM_COLORS = {
+    1: '#f2ae2c', 2: '#1263a6', 3: '#df3339', 4: '#8a5b94',
+    5: '#e0522b', 6: '#0e5a4a', 7: '#7c3a1b', 8: '#131114',
+    9: '#f2ae2c', 10: '#1263a6', 11: '#df3339', 12: '#8a5b94',
+    13: '#e0522b', 14: '#0e5a4a', 15: '#7c3a1b',
   };
 
   const SNOOKER_COLORS = {
@@ -498,9 +516,14 @@
       const speedInput = clamp(options.speed || 1, 0.05, 7.2);
       const requestedTipX = options.tipX || 0;
       const requestedTipY = options.tipY || 0;
+      // The chalked tip grips only while the contact normal stays inside the
+      // friction cone: at offset b the normal is tilted by asin(b/R), so the
+      // no-slip boundary is b/R = μ/√(1+μ²) — 0.53–0.58 for chalked leather
+      // (Cross 2008: μ ≈ 0.577 needed at b/R = 0.5).  Together with the tip
+      // shape/separation bounds this puts the miscue limit near the measured
+      // "half the radius", instead of the ~0.9R a pure geometry cap allows.
       const frictionContactLimit = tipSpec.friction / Math.sqrt(1 + tipSpec.friction * tipSpec.friction);
-      const frictionSafeOffset = clamp(frictionContactLimit / 0.63, 0.78, 0.93);
-      const safeOffset = Math.min(spec.maxOffset, tipSpec.safeOffset, frictionSafeOffset);
+      const safeOffset = Math.min(spec.maxOffset, tipSpec.safeOffset, frictionContactLimit);
       let tipX = clamp(requestedTipX, -safeOffset, safeOffset);
       let tipY = clamp(requestedTipY, -safeOffset, safeOffset);
       const offsetMagnitude = Math.hypot(tipX, tipY);
@@ -647,7 +670,11 @@
           } else {
             ball.state = 'airborne';
           }
-        } else {
+        } else if (!ball.railContact) {
+          // While a cushion episode owns the ball its bottom patch is loaded
+          // far beyond mg and lives inside the episode integrator; running
+          // the unloaded cloth solver concurrently would perturb the slip
+          // state once per step and make the outcome depend on step size.
           this.evolveBall(ball, dt);
         }
         ball.pos.x += ball.vel.x * dt;
@@ -1045,6 +1072,29 @@
           torqueY += armZ * ffX - armX * ffZ;
           torqueZ += armX * ffY - armY * ffX;
         }
+        // Mathavan (2010): the slate is a second loaded friction contact
+        // during a cushion impact — the nose drives the ball downward and
+        // cloth friction at the bottom patch works against mg plus that
+        // extra load for the whole episode (the per-step cloth solver stands
+        // aside while the episode owns the ball).
+        if (ball.posY <= 1e-9) {
+          const slateLoad = Math.max(0, ball.mass * G - fy);
+          const R = ball.radius;
+          const slipX = ball.vel.x + ball.omega.z * R;
+          const slipZ = ball.vel.z - ball.omega.x * R;
+          const slip = Math.hypot(slipX, slipZ);
+          if (slip > 1e-6 && slateLoad > 0) {
+            // In-plane mobility of the bottom patch is 1/m + R²/I = 7/(2m).
+            const holdForce = slip / (h * (7 / (2 * ball.mass)));
+            const friction = Math.min(this.params.muSlide * slateLoad, holdForce);
+            const fxSlate = -friction * slipX / slip;
+            const fzSlate = -friction * slipZ / slip;
+            fx += fxSlate;
+            fz += fzSlate;
+            torqueX += -R * fzSlate;
+            torqueZ += R * fxSlate;
+          }
+        }
         ball.vel.x += fx / ball.mass * h;
         ball.vel.z += fz / ball.mass * h;
         if (fy < 0 && ball.posY <= 1e-9) contact.downImpulse -= fy * h;
@@ -1302,6 +1352,6 @@
 
   global.BilliardsPhysics = {
     PhysicsWorld, POOL_PARAMS, CHINESE_PARAMS, SNOOKER_PARAMS, CUE_SPECS, TIP_PRESETS,
-    TABLES, POOL_COLORS, SNOOKER_COLORS,
+    TABLES, POOL_COLORS, PALLADIUM_COLORS, SNOOKER_COLORS,
   };
 })(window);
