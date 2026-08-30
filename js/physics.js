@@ -76,6 +76,11 @@
   // refined steps used in slow motion sharpen the contact integration too.
   const CUSHION_SUBSTEP = 1 / 14400;
 
+  // Tip curvature radius (nickel-dome leather, ~10 mm).  The tip is a curved
+  // surface: a cue axis aimed at offset h on the ball face lands its contact
+  // point at only b = h·R/(R+ρ), and the miscue limit is a property of b.
+  const TIP_CURVATURE_RADIUS = 0.0102;
+
   // safeOffset is the tip-shape/hold bound; combined with the chalk-friction
   // cone it puts the miscue limit at b/R ≈ 0.50–0.54, matching Dr Dave's
   // measured "about half the radius" boundary (robust across chalk brands).
@@ -523,7 +528,15 @@
       // shape/separation bounds this puts the miscue limit near the measured
       // "half the radius", instead of the ~0.9R a pure geometry cap allows.
       const frictionContactLimit = tipSpec.friction / Math.sqrt(1 + tipSpec.friction * tipSpec.friction);
-      const safeOffset = Math.min(spec.maxOffset, tipSpec.safeOffset, frictionContactLimit);
+      // Those limits live at the CONTACT point b, but tipX/tipY — the UI
+      // marker, the presets and the URL params — are AIM units: where the cue
+      // axis points on the ball face.  The curved tip lands its contact at
+      // b = h·R/(R+ρ), so the aim-unit boundary is the contact limit divided
+      // by that compression: ≈ 0.68–0.75 R before the tip skids off, exactly
+      // like a real cue, while the measured b/R ≈ 0.5 physics stays put.  The
+      // spin/squirt constants are calibrated end-to-end in aim units already.
+      const contactScale = R / (R + TIP_CURVATURE_RADIUS);
+      const safeOffset = Math.min(0.88, Math.min(spec.maxOffset, tipSpec.safeOffset, frictionContactLimit) / contactScale);
       let tipX = clamp(requestedTipX, -safeOffset, safeOffset);
       let tipY = clamp(requestedTipY, -safeOffset, safeOffset);
       const offsetMagnitude = Math.hypot(tipX, tipY);

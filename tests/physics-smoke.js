@@ -616,9 +616,12 @@ function throwRig({ objectZ = 0, sideSpin = 0, roll = 0, speed = 1.5 }) {
   world.setTipType('hard');
   const options = { direction: { x: 1, z: 0 }, speed: 4, tipY: 0, elevation: 0 };
   const clean = world.cueImpactMetrics({ ...options, tipX: 0.42 });
-  const bad = world.cueImpactMetrics({ ...options, tipX: 0.56 });
-  assert.ok(clean.safeOffset > 0.46 && clean.safeOffset < 0.56,
-    `miscue limit ${clean.safeOffset.toFixed(3)} drifted from the measured ~0.5R boundary`);
+  const bad = world.cueImpactMetrics({ ...options, tipX: 0.78 });
+  // The measured miscue limit is b/R ≈ 0.5 at the CONTACT point; through the
+  // tip-curvature compression b = h·R/(R+ρ) the AIM-unit boundary the UI
+  // exposes sits near 0.68 for a hard tip.
+  assert.ok(clean.safeOffset > 0.63 && clean.safeOffset < 0.72,
+    `aim-unit miscue limit ${clean.safeOffset.toFixed(3)} drifted from the ~0.68R boundary`);
   assert.equal(clean.miscue, false);
   assert.equal(bad.miscue, true);
   assert.ok(bad.horizontalSpeed < clean.horizontalSpeed * 0.45, 'miscue kept too much speed');
@@ -627,6 +630,30 @@ function throwRig({ objectZ = 0, sideSpin = 0, roll = 0, speed = 1.5 }) {
   world.setTipType('soft');
   const softLimit = world.cueImpactMetrics({ ...options, tipX: 0.2 }).safeOffset;
   assert.ok(softLimit > clean.safeOffset, 'stickier soft leather should hold slightly beyond a hard tip');
+}
+
+// Deep draw: a curved tip aimed 0.65R below centre still contacts inside the
+// b/R ≈ 0.5 friction cone, so the shot must spin hard and pull back a long
+// way — the aim-unit miscue boundary sits near 0.7R, not at the contact
+// point's 0.5R.  (This is the "low draw stopped working" regression.)
+{
+  const world = new PhysicsWorld('chineseEight', { silent: true });
+  const cue = world.getCueBall(); const object = world.getBall('1');
+  world.balls = [cue, object];
+  cue.pos = { x: -0.3, z: 0 }; object.pos = { x: 0, z: 0 }; object.vel = { x: 0, z: 0 };
+  world.strike({ direction: { x: 1, z: 0 }, speed: 3, tipX: 0, tipY: -0.65, elevation: 3 });
+  assert.equal(world.lastCueMetrics.miscue, false, 'a 0.65R aim-height draw must not miscue');
+  assert.ok(cue.omega.z > 100, `deep draw spin only ${cue.omega.z.toFixed(0)} rad/s`);
+  let contactX = null, minX = cue.pos.x;
+  world.onEvent((e) => { if (e.type === 'ball-ball' && contactX == null) contactX = cue.pos.x; });
+  for (let i = 0; i < 5000 && world.isMoving(); i += 1) {
+    world.step(1 / 1000);
+    if (contactX != null) minX = Math.min(minX, cue.pos.x);
+  }
+  assert.ok(contactX != null && contactX - minX > 0.5,
+    `deep draw only pulled back ${contactX == null ? '?' : ((contactX - minX) * 100).toFixed(1)} cm`);
+  const beyond = world.cueImpactMetrics({ direction: { x: 1, z: 0 }, speed: 3, tipX: 0, tipY: -0.86, elevation: 3 });
+  assert.equal(beyond.miscue, true, 'the aim-unit boundary must still exist inside the control range');
 }
 
 // An elevated firm stroke drives the ball into the slate and it rebounds

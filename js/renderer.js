@@ -893,11 +893,17 @@
       ctx.fillStyle = ball.kind === 'stripe' ? ivory : ball.color;
       ctx.fillRect(0, 0, W, H);
       if (ball.kind === 'stripe') {
-        // Colour lives in two polar caps beyond ±42° latitude; the wide ivory
-        // band owns the equator and carries the badge directly.
+        // In the product photography the colour of a stripe ball is confined
+        // to two SMALL polar caps beyond ±56° latitude, each rimmed with an
+        // ink ring; seen from the side the colour is a ~17%-of-radius sliver
+        // at each edge and the ivory band with the badge owns everything
+        // else.  (±42° caps read as half-colour eggs — nothing like the set.)
         ctx.fillStyle = ball.color;
-        ctx.fillRect(0, 0, W, 68);
-        ctx.fillRect(0, 188, W, H - 188);
+        ctx.fillRect(0, 0, W, 48);
+        ctx.fillRect(0, 208, W, H - 208);
+        ctx.fillStyle = ink;
+        ctx.fillRect(0, 44, W, 7);
+        ctx.fillRect(0, 205, W, 7);
       }
       [128, 384].forEach((cx) => {
         this.traceTriLobe(ctx, cx, 128, 47, 0.22);
