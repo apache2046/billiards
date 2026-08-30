@@ -848,27 +848,59 @@
       this.ballStyle = style === 'palladium' ? 'palladium' : 'tv';
     }
 
-    // Rounded tri-lobe "rotor" path — the Palladium signature shape:
-    // r(θ) = r0·(1 + a·cos(3(θ − 90°))) balloons three lobes with gently
-    // pinched sides.  stretchX widens the path to compensate the
-    // equirectangular longitude compression away from the equator.
-    traceTriLobe(ctx, cx, cy, r0, a, stretchX = 1) {
+    // The Palladium "rotor": three circular lobes (radius ρ, centres peak−ρ
+    // from the figure centre at bearings 0°/120°/240°, apex on top) joined by
+    // long concave side arcs that meet the lobes tangentially and bottom out
+    // at the valley radius.  The side-arc radius follows from the tangency
+    // condition; the profile is the min of the ray's lobe exit and side-arc
+    // entry.  Laid onto the equirect texture with the spherical
+    // destination-point formula so it renders round on the ball instead of
+    // inheriting the map's polar stretch.
+    traceSphericalRotor(ctx, lonDeg, latDeg, peakDeg, valleyDeg, lobeDeg) {
+      const W = 512, H = 256;
+      const lat0 = latDeg * Math.PI / 180;
+      const rho = lobeDeg, d = peakDeg - lobeDeg, V = valleyDeg;
+      const rhoS = (d * d + V * V - d * V - rho * rho) / (2 * rho + d - 2 * V);
+      const D = V + rhoS;
+      // Tangency point between lobe circle and side arc fixes the switchover
+      // bearing: P = C_lobe + rho·(C_side − C_lobe)/|C_side − C_lobe|.
+      const csx = D * Math.sin(Math.PI / 3), csy = D * Math.cos(Math.PI / 3);
+      const gap = Math.hypot(csx, csy - d);
+      const px = rho * csx / gap, py = d + rho * (csy - d) / gap;
+      const deltaT = Math.atan2(px, py);
       ctx.beginPath();
-      for (let i = 0; i <= 72; i += 1) {
-        const theta = i / 72 * Math.PI * 2;
-        const r = r0 * (1 + a * Math.cos(3 * (theta - Math.PI / 2)));
-        const x = cx + Math.cos(theta) * r * stretchX;
-        const y = cy + Math.sin(theta) * r;
+      for (let i = 0; i <= 144; i += 1) {
+        const alpha = i / 144 * Math.PI * 2;
+        let delta = alpha % (Math.PI * 2 / 3);
+        if (delta > Math.PI / 3) delta = Math.PI * 2 / 3 - delta;
+        const sinD = Math.sin(delta), cosD = Math.cos(delta);
+        let betaDeg;
+        if (delta <= deltaT) {
+          betaDeg = d * cosD + Math.sqrt(Math.max(0, rho * rho - d * d * sinD * sinD));
+        } else {
+          const gamma = Math.PI / 3 - delta;
+          const discS = D * D * Math.cos(gamma) * Math.cos(gamma) - D * D + rhoS * rhoS;
+          betaDeg = D * Math.cos(gamma) - Math.sqrt(Math.max(0, discS));
+        }
+        const beta = betaDeg * Math.PI / 180;
+        const sinLat = Math.sin(lat0) * Math.cos(beta) + Math.cos(lat0) * Math.sin(beta) * Math.cos(alpha);
+        const dlon = Math.atan2(
+          Math.sin(alpha) * Math.sin(beta) * Math.cos(lat0),
+          Math.cos(beta) - Math.sin(lat0) * sinLat,
+        );
+        const x = (lonDeg + dlon * 180 / Math.PI) / 360 * W;
+        const y = (90 - Math.asin(Math.max(-1, Math.min(1, sinLat))) * 180 / Math.PI) / 180 * H;
         if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
       }
       ctx.closePath();
     }
 
-    // Dynaspheres Palladium-inspired look, recreated from the manufacturer's
-    // product photography: a large ivory tri-lobe badge with a heavy ink
-    // contour instead of a number circle, stripes reduced to two colour caps
-    // over a wide ivory band, an outline-only badge on the 8, and an ivory
-    // cue ball carrying six small rotor marks.
+    // Dynaspheres Palladium-inspired look, measured off the manufacturer's
+    // product photography: an apex-up ivory rotor badge (lobe peak ≈ 41°,
+    // valley ≈ 25° angular radius) with a heavy ink contour instead of a
+    // number circle, stripe colour in two caps starting at ±43° latitude that
+    // meet the band with no painted ring, a smaller outline-only badge on the
+    // 8, and an ivory cue ball carrying six small deep-lobed rotor marks.
     paintPalladiumBall(ctx, ball) {
       const W = 512, H = 256;
       const ivory = '#f2e9d2', badgeFill = '#efe7cd', ink = '#1a181b';
@@ -877,14 +909,13 @@
         ctx.fillStyle = ivory;
         ctx.fillRect(0, 0, W, H);
         // Three rotor marks per hemisphere at ±35° latitude: a spin read from
-        // any side without the polar smearing of the equirectangular map.
+        // any side.  Logo-deep lobes (d ≈ ρ) at roughly 0.17R across.
         ctx.fillStyle = ink;
         [[0, 35], [120, 35], [240, 35], [60, -35], [180, -35], [300, -35]].forEach(([lon, lat]) => {
-          const x = lon / 360 * W, y = (90 - lat) / 180 * H;
-          this.traceTriLobe(ctx, x, y, 8.5, 0.24, 1 / Math.cos(lat * Math.PI / 180));
+          this.traceSphericalRotor(ctx, lon, lat, 6.5, 2.6, 2.6);
           ctx.fill();
           if (lon === 0) { // seam copy so the mark at longitude 0 wraps cleanly
-            this.traceTriLobe(ctx, x + W, y, 8.5, 0.24, 1 / Math.cos(lat * Math.PI / 180));
+            this.traceSphericalRotor(ctx, lon + 360, lat, 6.5, 2.6, 2.6);
             ctx.fill();
           }
         });
@@ -893,20 +924,17 @@
       ctx.fillStyle = ball.kind === 'stripe' ? ivory : ball.color;
       ctx.fillRect(0, 0, W, H);
       if (ball.kind === 'stripe') {
-        // In the product photography the colour of a stripe ball is confined
-        // to two SMALL polar caps beyond ±56° latitude, each rimmed with an
-        // ink ring; seen from the side the colour is a ~17%-of-radius sliver
-        // at each edge and the ivory band with the badge owns everything
-        // else.  (±42° caps read as half-colour eggs — nothing like the set.)
+        // Measured off the set: colour caps start at ±43° latitude (their
+        // face-on boundary sits at ~0.68R) and meet the ivory band directly —
+        // the product has no painted ring at the boundary.
         ctx.fillStyle = ball.color;
-        ctx.fillRect(0, 0, W, 48);
-        ctx.fillRect(0, 208, W, H - 208);
-        ctx.fillStyle = ink;
-        ctx.fillRect(0, 44, W, 7);
-        ctx.fillRect(0, 205, W, 7);
+        ctx.fillRect(0, 0, W, 67);
+        ctx.fillRect(0, 189, W, H - 189);
       }
-      [128, 384].forEach((cx) => {
-        this.traceTriLobe(ctx, cx, 128, 47, 0.22);
+      [90, 270].forEach((lonDeg) => {
+        const cx = lonDeg / 360 * W;
+        if (eight) this.traceSphericalRotor(ctx, lonDeg, 0, 35.7, 20.9, 12.2);
+        else this.traceSphericalRotor(ctx, lonDeg, 0, 41, 24, 14);
         if (!eight) { ctx.fillStyle = badgeFill; ctx.fill(); }
         ctx.strokeStyle = eight ? ivory : ink;
         ctx.lineWidth = 8;
@@ -914,11 +942,19 @@
         ctx.stroke();
         if (ball.number != null) {
           ctx.fillStyle = eight ? ivory : ink;
-          ctx.font = '800 50px "Arial Rounded MT Bold", Nunito, Arial, sans-serif';
+          ctx.font = '800 58px "Arial Rounded MT Bold", Nunito, Arial, sans-serif';
           ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-          ctx.fillText(String(ball.number), cx, 126);
-          // The 6 and 9 carry the set's orientation underline.
-          if (ball.number === 6 || ball.number === 9) ctx.fillRect(cx - 15, 153, 30, 5);
+          ctx.fillText(String(ball.number), cx, 128);
+          // The 6 and 9 carry the set's rounded orientation dash.
+          if (ball.number === 6 || ball.number === 9) {
+            ctx.strokeStyle = ink;
+            ctx.lineWidth = 6;
+            ctx.lineCap = 'round';
+            ctx.beginPath();
+            ctx.moveTo(cx - 13, 161);
+            ctx.lineTo(cx + 13, 161);
+            ctx.stroke();
+          }
         }
       });
     }
