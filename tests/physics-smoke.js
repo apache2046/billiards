@@ -697,6 +697,56 @@ function throwRig({ objectZ = 0, sideSpin = 0, roll = 0, speed = 1.5 }) {
   }
 }
 
+// A perfectly symmetric split shot must leave symmetrically: contacts that
+// tie in time-of-impact and share a ball are solved as one impulse system,
+// so neither frozen ball is fed the cue's full momentum first.  The outcome
+// must not depend on ball-array order, and the collision stays dissipative.
+{
+  const split = (swap) => {
+    const world = new PhysicsWorld('practice', { silent: true });
+    const cue = world.getCueBall();
+    const one = world.getBall('1'), two = world.getBall('2');
+    world.balls = swap ? [cue, two, one] : [cue, one, two];
+    const R = cue.radius;
+    one.pos = { x: 0, z: R }; one.vel = { x: 0, z: 0 };
+    two.pos = { x: 0, z: -R }; two.vel = { x: 0, z: 0 };
+    cue.pos = { x: -0.25, z: 0 }; cue.vel = { x: 3, z: 0 }; cue.state = 'sliding';
+    const energyBefore = world.totalEnergy();
+    let maxEnergy = 0;
+    for (let i = 0; i < 120; i += 1) {
+      world.step(1 / 1000);
+      maxEnergy = Math.max(maxEnergy, world.totalEnergy());
+    }
+    return { one, two, cue, gain: maxEnergy / energyBefore };
+  };
+  const s = (v) => Math.hypot(v.x, v.z);
+  const plain = split(false), swapped = split(true);
+  assert.ok(Math.abs(s(plain.one.vel) - s(plain.two.vel)) < 1e-9,
+    `symmetric split is lopsided: ${s(plain.one.vel).toFixed(6)} vs ${s(plain.two.vel).toFixed(6)}`);
+  assert.ok(Math.abs(plain.cue.vel.z) < 1e-6, `cue picked up sideways speed ${plain.cue.vel.z}`);
+  assert.ok(s(plain.one.vel) > 1.2, 'split balls barely moved');
+  assert.ok(Math.abs(s(plain.one.vel) - s(swapped.one.vel)) < 1e-9,
+    'split outcome depends on ball-array order');
+  assert.ok(plain.gain <= 1 + 1e-9, `split created energy: maxE/E0=${plain.gain.toFixed(6)}`);
+}
+
+// An inline frozen pair is NOT simultaneous: the impulse walks through the
+// chain Newton's-cradle style and the far ball must carry almost everything.
+{
+  const world = new PhysicsWorld('practice', { silent: true });
+  const cue = world.getCueBall();
+  const mid = world.getBall('1'), far = world.getBall('2');
+  world.balls = [cue, mid, far];
+  const R = cue.radius;
+  mid.pos = { x: 0, z: 0 }; mid.vel = { x: 0, z: 0 };
+  far.pos = { x: 2 * R, z: 0 }; far.vel = { x: 0, z: 0 };
+  cue.pos = { x: -0.25, z: 0 }; cue.vel = { x: 3, z: 0 }; cue.state = 'sliding';
+  for (let i = 0; i < 120; i += 1) world.step(1 / 1000);
+  assert.ok(far.vel.x > 2.2, `cradle far ball only ${far.vel.x.toFixed(3)} m/s`);
+  assert.ok(Math.abs(mid.vel.x) < 0.5 && Math.abs(cue.vel.x) < 0.5,
+    'cradle impulse did not propagate through the chain');
+}
+
 // The settled event is the commit point for rules, undo and the next aim: it
 // must not fire while a cushion episode still holds the ball, or the position
 // everything locks onto is one the rubber is about to change.

@@ -771,7 +771,35 @@
       ball.lastSpeed = newSpeed;
     }
 
-    resolveBallPairs(dt = 1 / 1000) {
+    // Contact geometry for a potentially colliding pair on current positions
+    // and velocities.  `toi` is the rewind to the true first touch; it stays
+    // 0 when the overlap must be handled in place: slow squeezes, degenerate
+    // relative speed, or a ball owned by a cushion episode, which position
+    // surgery must never move.
+    pairContact(a, b, dt) {
+      // A jumping ball passes over one it no longer overlaps in height.
+      if (Math.abs(a.posY - b.posY) > (a.radius + b.radius) * 0.8) return null;
+      const dx = b.pos.x - a.pos.x;
+      const dz = b.pos.z - a.pos.z;
+      const minDistance = a.radius + b.radius;
+      const distanceSq = dx * dx + dz * dz;
+      if (distanceSq >= minDistance * minDistance) return null;
+      const rvx = b.vel.x - a.vel.x, rvz = b.vel.z - a.vel.z;
+      const closing = dx * rvx + dz * rvz;
+      const relSpeedSq = rvx * rvx + rvz * rvz;
+      let toi = 0;
+      if (closing < -1e-9 && relSpeedSq > 1e-12 && !a.railContact && !b.railContact) {
+        const discriminant = closing * closing - relSpeedSq * (distanceSq - minDistance * minDistance);
+        if (discriminant > 0) toi = Math.max(0, Math.min(dt, (closing + Math.sqrt(discriminant)) / relSpeedSq));
+      }
+      return { a, b, minDistance, closing, toi };
+    }
+
+    // Positional relaxation for overlaps that no rewind will separate (rack
+    // clusters, slow squeezes).  It runs as its own sweep so the impulse
+    // stage below cannot inherit an order dependence from where relaxation
+    // happened to interleave.
+    relaxBallOverlaps(dt) {
       const balls = this.balls;
       for (let i = 0; i < balls.length; i += 1) {
         const a = balls[i];
@@ -779,101 +807,162 @@
         for (let j = i + 1; j < balls.length; j += 1) {
           const b = balls[j];
           if (b.pocketed) continue;
-          // A jumping ball passes over one it no longer overlaps in height.
-          if (Math.abs(a.posY - b.posY) > (a.radius + b.radius) * 0.8) continue;
-          const dx = b.pos.x - a.pos.x;
-          const dz = b.pos.z - a.pos.z;
-          const minDistance = a.radius + b.radius;
-          const distanceSq = dx * dx + dz * dz;
-          if (distanceSq >= minDistance * minDistance) continue;
-
-          // Rewind to the true time of impact: a fast pair closes millimetres
-          // past tangency within one step, and the centre line — which IS the
-          // impact normal — rotates while they interpenetrate.  Taking the
-          // normal at first touch keeps thin-cut contact angles, and with
-          // them throw and potting lines, honest at speed.
-          const rvx = b.vel.x - a.vel.x, rvz = b.vel.z - a.vel.z;
-          const closing = dx * rvx + dz * rvz;
-          const relSpeedSq = rvx * rvx + rvz * rvz;
-          let toi = 0;
-          if (closing < -1e-9 && relSpeedSq > 1e-12 && !a.railContact && !b.railContact) {
-            const discriminant = closing * closing - relSpeedSq * (distanceSq - minDistance * minDistance);
-            if (discriminant > 0) {
-              toi = Math.min(dt, (closing + Math.sqrt(discriminant)) / relSpeedSq);
-              if (toi > 0) {
-                a.pos.x -= a.vel.x * toi; a.pos.z -= a.vel.z * toi;
-                b.pos.x -= b.vel.x * toi; b.pos.z -= b.vel.z * toi;
-              }
-            }
-          }
-          const tdx = b.pos.x - a.pos.x, tdz = b.pos.z - a.pos.z;
-          let distance = Math.hypot(tdx, tdz);
-          let nx = 1, nz = 0;
-          if (distance > 1e-8) { nx = tdx / distance; nz = tdz / distance; }
-          else distance = minDistance;
-
+          const contact = this.pairContact(a, b, dt);
+          if (!contact || contact.toi > 0) continue;
+          const dx = b.pos.x - a.pos.x, dz = b.pos.z - a.pos.z;
+          const distance = Math.hypot(dx, dz);
+          const nx = distance > 1e-8 ? dx / distance : 1;
+          const nz = distance > 1e-8 ? dz / distance : 0;
           const invA = 1 / a.mass, invB = 1 / b.mass;
-          if (toi === 0) {
-            // Slow squeezes and rack clusters keep the positional relaxation.
-            // A ball owned by a cushion episode must not be teleported into the
-            // rubber: free compression would become free spring energy.
-            const correction = Math.max(0, minDistance - distance + 1e-5) / (invA + invB) * 0.76;
-            const shiftA = a.railContact ? 0 : (b.railContact ? correction * (invA + invB) : correction * invA);
-            const shiftB = b.railContact ? 0 : (a.railContact ? correction * (invA + invB) : correction * invB);
-            a.pos.x -= nx * shiftA; a.pos.z -= nz * shiftA;
-            b.pos.x += nx * shiftB; b.pos.z += nz * shiftB;
-          }
+          // A ball owned by a cushion episode must not be teleported into the
+          // rubber: free compression would become free spring energy.
+          const correction = Math.max(0, contact.minDistance - distance + 1e-5) / (invA + invB) * 0.76;
+          const shiftA = a.railContact ? 0 : (b.railContact ? correction * (invA + invB) : correction * invA);
+          const shiftB = b.railContact ? 0 : (a.railContact ? correction * (invA + invB) : correction * invB);
+          a.pos.x -= nx * shiftA; a.pos.z -= nz * shiftA;
+          b.pos.x += nx * shiftB; b.pos.z += nz * shiftB;
+        }
+      }
+    }
 
-          const relNormal = (b.vel.x - a.vel.x) * nx + (b.vel.z - a.vel.z) * nz;
-          if (relNormal >= -1e-5) {
-            if (toi > 0) {
-              a.pos.x += a.vel.x * toi; a.pos.z += a.vel.z * toi;
-              b.pos.x += b.vel.x * toi; b.pos.z += b.vel.z * toi;
+    resolveBallPairs(dt = 1 / 1000) {
+      this.relaxBallOverlaps(dt);
+      // Impulses run strictly in time-of-impact order, one contact (or one
+      // simultaneous cluster) at a time, rescanning in between because an
+      // applied impulse re-orders, retires or creates the remaining contacts.
+      // The legacy single sweep resolved pairs in ball-array order, which
+      // handed the first-scanned pair the shared ball's full momentum: a
+      // perfectly symmetric split shot came out 2:1 lopsided.
+      const balls = this.balls;
+      const done = new Set();
+      for (let round = 0; round < balls.length * balls.length; round += 1) {
+        const contacts = [];
+        for (let i = 0; i < balls.length; i += 1) {
+          const a = balls[i];
+          if (a.pocketed) continue;
+          for (let j = i + 1; j < balls.length; j += 1) {
+            const b = balls[j];
+            if (b.pocketed || done.has(i * balls.length + j)) continue;
+            const contact = this.pairContact(a, b, dt);
+            if (contact && contact.closing < 0) {
+              contact.key = i * balls.length + j;
+              contacts.push(contact);
             }
-            continue;
           }
-          const normalImpulse = -(1 + this.params.restitutionBall) * relNormal / (invA + invB);
+        }
+        if (!contacts.length) return;
+        // Earliest first touch = largest rewind.
+        let first = contacts[0];
+        for (const c of contacts) if (c.toi > first.toi) first = c;
+        // Contacts that share a ball and tie with the earliest one in touch
+        // time are genuinely simultaneous: they must share one impulse system
+        // instead of feeding whichever contact the scan reached first.
+        const cluster = [first];
+        const bodies = new Set([first.a, first.b]);
+        for (let grew = true; grew;) {
+          grew = false;
+          for (const c of contacts) {
+            if (cluster.includes(c) || Math.abs(c.toi - first.toi) > 1e-7) continue;
+            if (bodies.has(c.a) || bodies.has(c.b)) {
+              cluster.push(c); bodies.add(c.a); bodies.add(c.b); grew = true;
+            }
+          }
+        }
+        this.resolveContactCluster(cluster, [...bodies], first.toi);
+        for (const c of cluster) done.add(c.key);
+      }
+    }
 
-          // Full contact-point slip: the equator contact arms are ±R·n̂, so the
-          // relative surface velocity has an in-plane part (side spin + cut)
-          // and a vertical part (follow/draw rubbing).  Solving both in one
-          // friction cone is what makes a rolling cue ball throw less than a
-          // stun shot and lets follow/draw transfer between balls.
+    resolveContactCluster(cluster, bodies, toi) {
+      // Rewind to the true time of impact: a fast pair closes millimetres
+      // past tangency within one step, and the centre line — which IS the
+      // impact normal — rotates while they interpenetrate.  Taking the normal
+      // at first touch keeps thin-cut contact angles, and with them throw and
+      // potting lines, honest at speed.  Every ball of the cluster rewinds
+      // once, even when it appears in several contacts.
+      if (toi > 0) {
+        for (const ball of bodies) {
+          ball.pos.x -= ball.vel.x * toi;
+          ball.pos.z -= ball.vel.z * toi;
+        }
+      }
+      const live = [];
+      for (const contact of cluster) {
+        const { a, b } = contact;
+        const dx = b.pos.x - a.pos.x, dz = b.pos.z - a.pos.z;
+        const distance = Math.hypot(dx, dz);
+        const nx = distance > 1e-8 ? dx / distance : 1;
+        const nz = distance > 1e-8 ? dz / distance : 0;
+        const preRelN = (b.vel.x - a.vel.x) * nx + (b.vel.z - a.vel.z) * nz;
+        if (preRelN >= -1e-5) continue;
+        // Full contact-point slip: the equator contact arms are ±R·n̂, so the
+        // relative surface velocity has an in-plane part (side spin + cut)
+        // and a vertical part (follow/draw rubbing), both taken in the shared
+        // pre-impact state.  Solving both in one friction cone is what makes
+        // a rolling cue ball throw less than a stun shot and lets follow/draw
+        // transfer between balls.
+        const rA = a.radius, rB = b.radius;
+        const tx = -nz, tz = nx;
+        const surfAX = a.vel.x + a.omega.y * nz * rA;
+        const surfAZ = a.vel.z - a.omega.y * nx * rA;
+        const surfAY = (a.omega.z * nx - a.omega.x * nz) * rA;
+        const surfBX = b.vel.x - b.omega.y * nz * rB;
+        const surfBZ = b.vel.z + b.omega.y * nx * rB;
+        const surfBY = -(b.omega.z * nx - b.omega.x * nz) * rB;
+        live.push({
+          a, b, nx, nz, tx, tz, preRelN,
+          slipT: (surfBX - surfAX) * tx + (surfBZ - surfAZ) * tz,
+          slipY: surfBY - surfAY,
+          invA: 1 / a.mass, invB: 1 / b.mass, lambda: 0,
+        });
+      }
+      if (live.length) {
+        // Simultaneous normal impulses: projected Gauss-Seidel with every
+        // restitution target taken from the shared pre-impact velocities.
+        // A single contact converges on the first sweep to the closed-form
+        // pair impulse, so isolated collisions keep their calibrated maths
+        // bit for bit; ties iterate to the joint solution, and alternating
+        // the sweep direction keeps a symmetric cluster from inheriting
+        // scan-order bias.
+        const e = this.params.restitutionBall;
+        for (let iter = 0; iter < 60; iter += 1) {
+          let applied = 0;
+          for (let s = 0; s < live.length; s += 1) {
+            const c = live[iter % 2 ? live.length - 1 - s : s];
+            const relN = (c.b.vel.x - c.a.vel.x) * c.nx + (c.b.vel.z - c.a.vel.z) * c.nz;
+            const delta = -(relN + e * c.preRelN) / (c.invA + c.invB);
+            const next = Math.max(0, c.lambda + delta);
+            const change = next - c.lambda;
+            c.lambda = next;
+            c.a.vel.x -= c.nx * change * c.invA; c.a.vel.z -= c.nz * change * c.invA;
+            c.b.vel.x += c.nx * change * c.invB; c.b.vel.z += c.nz * change * c.invB;
+            applied = Math.max(applied, Math.abs(change));
+          }
+          if (applied < 1e-12) break;
+        }
+        for (const c of live) {
+          const { a, b } = c;
           const rA = a.radius, rB = b.radius;
-          const tx = -nz, tz = nx;
-          const surfAX = a.vel.x + a.omega.y * nz * rA;
-          const surfAZ = a.vel.z - a.omega.y * nx * rA;
-          const surfAY = (a.omega.z * nx - a.omega.x * nz) * rA;
-          const surfBX = b.vel.x - b.omega.y * nz * rB;
-          const surfBZ = b.vel.z + b.omega.y * nx * rB;
-          const surfBY = -(b.omega.z * nx - b.omega.x * nz) * rB;
-          const slipT = (surfBX - surfAX) * tx + (surfBZ - surfAZ) * tz;
-          const slipY = surfBY - surfAY;
-          const slipSpeed = Math.hypot(slipT, slipY);
-          const mu = ballBallFriction(slipSpeed);
-
-          const denomT = invA + invB + rA * rA / a.inertia + rB * rB / b.inertia;
-          // The slate carries the vertical linear reaction, so vertical rubbing
-          // only exchanges spin (same approximation as the cushion solver).
+          const mu = ballBallFriction(Math.hypot(c.slipT, c.slipY));
+          const denomT = c.invA + c.invB + rA * rA / a.inertia + rB * rB / b.inertia;
+          // The slate carries the vertical linear reaction, so vertical
+          // rubbing only exchanges spin (same approximation as the cushion
+          // solver).
           const denomY = rA * rA / a.inertia + rB * rB / b.inertia;
-          let impulseT = -slipT / denomT;
-          let impulseY = -slipY / denomY;
+          let impulseT = -c.slipT / denomT;
+          let impulseY = -c.slipY / denomY;
           const rawFriction = Math.hypot(impulseT, impulseY);
-          const frictionLimit = mu * normalImpulse;
+          const frictionLimit = mu * c.lambda;
           if (rawFriction > frictionLimit && rawFriction > 1e-12) {
             const scale = frictionLimit / rawFriction;
             impulseT *= scale; impulseY *= scale;
           }
-
-          const impulseX = normalImpulse * nx + impulseT * tx;
-          const impulseZ = normalImpulse * nz + impulseT * tz;
-          a.vel.x -= impulseX * invA; a.vel.z -= impulseZ * invA;
-          b.vel.x += impulseX * invB; b.vel.z += impulseZ * invB;
-
+          a.vel.x -= impulseT * c.tx * c.invA; a.vel.z -= impulseT * c.tz * c.invA;
+          b.vel.x += impulseT * c.tx * c.invB; b.vel.z += impulseT * c.tz * c.invB;
           // τ = (±R n̂) × f with friction f = (impulseT·t̂ + impulseY·ŷ); the
           // normal impulse passes through both centres and adds no torque.
-          const fX = impulseT * tx, fY = impulseY, fZ = impulseT * tz;
-          const crossX = -nz * fY, crossY = nz * fX - nx * fZ, crossZ = nx * fY;
+          const fX = impulseT * c.tx, fY = impulseY, fZ = impulseT * c.tz;
+          const crossX = -c.nz * fY, crossY = c.nz * fX - c.nx * fZ, crossZ = c.nx * fY;
           a.omega.x -= crossX * rA / a.inertia;
           a.omega.y -= crossY * rA / a.inertia;
           a.omega.z -= crossZ * rA / a.inertia;
@@ -881,22 +970,23 @@
           b.omega.y -= crossY * rB / b.inertia;
           b.omega.z -= crossZ * rB / b.inertia;
           a.state = b.state = 'sliding';
-          // Replay the rewound time with the post-impact velocities.
-          if (toi > 0) {
-            a.pos.x += a.vel.x * toi; a.pos.z += a.vel.z * toi;
-            b.pos.x += b.vel.x * toi; b.pos.z += b.vel.z * toi;
-          }
-
           const key = a.id < b.id ? `${a.id}|${b.id}` : `${b.id}|${a.id}`;
           const previous = this.collisionCooldown.get(key) || -1;
           if (this.time - previous > 0.028) {
             this.collisionCooldown.set(key, this.time);
             this.emit({
-              type: 'ball-ball', aId: a.id, bId: b.id, impulse: normalImpulse,
-              speed: Math.abs(relNormal), position: { x: a.pos.x + nx * a.radius, z: a.pos.z + nz * a.radius },
-              normal: { x: nx, z: nz },
+              type: 'ball-ball', aId: a.id, bId: b.id, impulse: c.lambda,
+              speed: Math.abs(c.preRelN), position: { x: a.pos.x + c.nx * a.radius, z: a.pos.z + c.nz * a.radius },
+              normal: { x: c.nx, z: c.nz },
             });
           }
+        }
+      }
+      // Replay the rewound time with the post-impact velocities.
+      if (toi > 0) {
+        for (const ball of bodies) {
+          ball.pos.x += ball.vel.x * toi;
+          ball.pos.z += ball.vel.z * toi;
         }
       }
     }
