@@ -299,12 +299,20 @@ kbd { display: inline-block; min-width: 24px; padding: 3px 5px; border: 1px soli
 }
 
 @media (max-width: 790px) {
-  html, body { overflow: auto; }
+  /* Exactly one scroller: html stays put, body owns the scroll — two nested
+     scrollers detach the sticky bottom bar and leave a dead band below. */
+  html { overflow: hidden; }
+  body { overflow-y: auto; height: 100dvh; }
   .app-shell { min-height: 100dvh; height: auto; grid-template-rows: 58px minmax(0, 1fr) 48px; }
-  .topbar { grid-template-columns: 1fr auto; padding: 0 12px; }
+  .topbar { grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; padding: 0 10px; }
   .brand-copy small, .scoreboard, #helpButton, .outline-button span { display: none; }
-  .topbar-center { justify-self: end; }
-  .top-actions { display: none; }
+  .topbar-center { justify-self: stretch; min-width: 0; }
+  .topbar-center .select-shell { width: 100%; }
+  .topbar-center .select-shell > span { display: none; }
+  .topbar-center .select-shell select { width: 100%; min-width: 0; }
+  /* Icon-only top actions stay: hiding them left touch players with no way
+     to re-rack (R is keyboard-only). */
+  .top-actions { gap: 4px; }
   .workspace { grid-template-columns: 1fr; grid-template-rows: minmax(430px, 60dvh) auto; }
   .control-panel { border-top: 1px solid var(--line); border-left: 0; }
   .panel-scroll { display: grid; grid-template-columns: 1fr 1fr; height: auto; overflow: visible; }

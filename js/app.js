@@ -495,8 +495,10 @@
         this.setSpin(x, y);
       };
       control.addEventListener('pointerdown', (event) => {
+        if (event.button !== 0) return; // right-click must not re-aim the tip
         activePointer = event.pointerId; control.setPointerCapture(activePointer); update(event); this.sound.ensure();
       });
+      control.addEventListener('contextmenu', (event) => event.preventDefault());
       control.addEventListener('pointermove', (event) => { if (event.pointerId === activePointer) update(event); });
       const release = (event) => { if (event.pointerId === activePointer) activePointer = null; };
       control.addEventListener('pointerup', release); control.addEventListener('pointercancel', release);
@@ -511,9 +513,16 @@
         return;
       }
       // A second primary pointer (second finger) must not usurp a live charge
-      // or placement drag — its release would fire a shot nobody meant.
+      // or placement drag — its release would fire a shot nobody meant.  On
+      // touch it reads as a pinch or a resting palm, so abort the charge
+      // outright rather than letting the first finger's release fire.
       if (event.button !== 0 || this.viewDrag || this.drag || this.placementDrag
-        || this.world.isMoving() || this.paused) return;
+        || this.world.isMoving() || this.paused) {
+        if (this.drag && event.pointerType === 'touch' && event.pointerId !== this.drag.pointerId) {
+          this.finishChargeDrag(true);
+        }
+        return;
+      }
       this.sound.ensure();
       if (this.placement) { this.beginPlacementDrag(event); return; }
       this.updateAimFromPointer(event);
@@ -555,7 +564,14 @@
         this.power = clamp(0.03 + pull / 190, 0.03, 1);
         this.pullback = this.power * 0.14;
         this.updatePowerUI(); this.positionPowerFloat(event); this.schedulePrediction();
-      } else if (!this.world.isMoving() && !this.paused && !this.placement) {
+      } else if (!this.drag && !this.viewDrag && !this.placementDrag
+        && event.pointerType !== 'touch'
+        && !this.world.isMoving() && !this.paused && !this.placement) {
+        // Hover aiming belongs to a bare mouse/pen pointer only: while any
+        // drag is live, moves from OTHER pointers must not re-aim the locked
+        // charge — and on touch the only pointers that can ever reach this
+        // branch are extra fingers (touch aiming happens inside the charge
+        // drag itself), so touch never hover-aims at all.
         this.updateAimFromPointer(event);
       }
     }
@@ -660,6 +676,7 @@
       if (!this.placement && this.world.isMoving()) { this.toast('请等球静止后再进入摆球模式'); return; }
       this.placement = !this.placement;
       this.placementDrag = null;
+      this.stage.classList.remove('grabbing');
       $('#placementToggle').classList.toggle('active', this.placement);
       $('#ballTray').hidden = !this.placement;
       this.stage.classList.toggle('placing', this.placement);
@@ -693,6 +710,7 @@
       $('#placementToggle').classList.remove('active');
       $('#ballTray').hidden = true;
       this.stage.classList.remove('placing');
+      this.stage.classList.remove('grabbing');
     }
 
     clearDrillSelection() {
@@ -794,10 +812,34 @@
 
     speedFromPower() { return 0.18 + 6.15 * Math.pow(this.power, 1.34); }
 
+    // A real stick cannot stroke level through the rail: with the butt over
+    // a cushion, the rail cap (≈30 mm above ball centre) forces a minimum
+    // elevation that grows as the cue ball nears the rail it points away
+    // from.  Draw, predict and strike all share this floor so the rendered
+    // cue never dives through the rail and the picture matches the physics.
+    railClearanceElevation() {
+      const cue = this.world.getCueBall();
+      if (!cue || cue.pocketed) return 0;
+      const t = this.world.table;
+      const back = { x: -this.aimDirection.x, z: -this.aimDirection.z };
+      let distance = Infinity;
+      if (back.x > 1e-6) distance = Math.min(distance, (t.width / 2 - cue.pos.x) / back.x);
+      if (back.x < -1e-6) distance = Math.min(distance, (-t.width / 2 - cue.pos.x) / back.x);
+      if (back.z > 1e-6) distance = Math.min(distance, (t.height / 2 - cue.pos.z) / back.z);
+      if (back.z < -1e-6) distance = Math.min(distance, (-t.height / 2 - cue.pos.z) / back.z);
+      if (!Number.isFinite(distance) || distance > 1.45) return 0;
+      const rise = 0.034; // rail cap over ball centre plus a stroke margin
+      return Math.min(45, Math.atan2(rise, Math.max(0.02, distance + 0.05)) * 180 / Math.PI);
+    }
+
+    effectiveElevation() {
+      return clamp(Math.max(this.elevation, this.railClearanceElevation()), 0, 60);
+    }
+
     shotOptions() {
       return {
         direction: { ...this.aimDirection }, speed: this.speedFromPower(),
-        tipX: this.tipX, tipY: this.tipY, elevation: this.elevation,
+        tipX: this.tipX, tipY: this.tipY, elevation: this.effectiveElevation(),
         cueType: this.world.cueType, tipType: this.world.tipType,
       };
     }
@@ -902,11 +944,14 @@
       const player = this.rule.currentPlayer, opponent = 1 - player;
       const first = this.world.getBall(this.shotRecord.firstContact);
       const group = this.rule.groups[player];
-      const ownRemainingBefore = group ? this.undoStack.at(-1).world.balls.filter((b) => !b.pocketed && b.kind === group).length : null;
+      // The 8 is racked with kind 'solid' for rendering; it must never count
+      // as one of the solids player's own balls, or that player could neither
+      // clear their group nor be fouled for striking the 8 early.
+      const ownRemainingBefore = group ? this.undoStack.at(-1).world.balls.filter((b) => !b.pocketed && b.kind === group && b.number !== 8).length : null;
       const expectedEight = group && ownRemainingBefore === 0;
       let foul = cueFoul || !first;
       if (first) {
-        if (group) foul ||= expectedEight ? first.number !== 8 : first.kind !== group;
+        if (group) foul ||= expectedEight ? first.number !== 8 : (first.number === 8 || first.kind !== group);
         else foul ||= first.number === 8;
       }
       const eightPotted = this.shotRecord.potted.includes('8');
@@ -951,7 +996,10 @@
       const legalPots = this.shotRecord.potted.filter((id) => id !== 'cue').length;
       this.rule.scores[player] += foul ? 0 : legalPots;
       if (foul) {
-        this.world.respotCue(); this.rule.currentPlayer = opponent; this.toast(`犯规：应先接触 ${this.shotRecord.lowestAtStart} 号球`);
+        this.world.respotCue(); this.rule.currentPlayer = opponent;
+        const wrongFirst = first && first.number !== this.shotRecord.lowestAtStart;
+        this.toast(wrongFirst ? `犯规：应先接触 ${this.shotRecord.lowestAtStart} 号球`
+          : cueFoul ? '犯规：母球落袋' : '犯规：母球未接触任何球');
       } else if (!legalPots) this.rule.currentPlayer = opponent;
     }
 
@@ -959,7 +1007,7 @@
 
     snookerSpot(id) {
       return {
-        yellow: { x: -0.89, z: -0.292 }, green: { x: -0.89, z: 0.292 }, brown: { x: -0.89, z: 0 },
+        yellow: { x: -0.89, z: 0.292 }, green: { x: -0.89, z: -0.292 }, brown: { x: -0.89, z: 0 },
         blue: { x: 0, z: 0 }, pink: { x: 0.89, z: 0 }, black: { x: 1.43, z: 0 },
       }[id];
     }
@@ -981,8 +1029,10 @@
         if (points) this.rule.snookerExpected = 'color';
       } else if (expected === 'color') {
         const colors = objectPots.filter((b) => b.value > 1);
-        if (colors.length !== 1 || objectPots.length !== 1) foul = true;
-        if (!foul) {
+        // Potting nothing with a legal first contact is a plain miss, not a
+        // foul; potting a red or more than one ball while on a colour is.
+        if (colors.length > 1 || colors.length !== objectPots.length) foul = true;
+        if (!foul && colors.length === 1) {
           points = colors[0].value;
           const redsAfter = this.world.balls.filter((b) => !b.pocketed && b.value === 1).length;
           if (redsAfter > 0) {
@@ -995,8 +1045,10 @@
         }
       } else {
         const target = this.world.getBall(expected);
-        if (objectPots.length !== 1 || objectPots[0]?.id !== expected) foul = true;
-        if (!foul) {
+        // A miss on the ball-on passes the turn; only potting the wrong ball
+        // (or extra balls) is a foul.
+        if (objectPots.length > 1 || (objectPots.length === 1 && objectPots[0].id !== expected)) foul = true;
+        if (!foul && objectPots.length === 1) {
           points = target?.value || 0;
           const order = this.snookerColorOrder();
           const next = order.indexOf(expected) + 1;
@@ -1006,14 +1058,18 @@
       }
 
       if (foul) {
-        const penalty = Math.max(4, first?.value || 4, ...objectPots.map((b) => b.value || 0));
+        // Official penalty: at least 4, raised to the value of the ball on,
+        // the ball first struck, or any ball wrongly potted.
+        const onValue = expectedRed ? 1 : expected === 'color' ? 0 : (this.world.getBall(expected)?.value || 0);
+        const penalty = Math.max(4, onValue, first?.value || 0, ...objectPots.map((b) => b.value || 0));
         this.rule.scores[opponent] += penalty;
         objectPots.filter((b) => b.value > 1).forEach((b) => this.world.respotBall(b, this.snookerSpot(b.id)));
         this.rule.currentPlayer = opponent;
         this.toast(`犯规，P${opponent + 1} 获得 ${penalty} 分`);
       } else if (points > 0) {
         this.rule.scores[player] += points;
-        this.toast(`P${player + 1} 得 ${points} 分 · 下一目标：${this.snookerTargetLabel()}`);
+        if (this.rule.winner != null) this.toast(`黑球收官，P${this.rule.winner + 1} 获胜本局`);
+        else this.toast(`P${player + 1} 得 ${points} 分 · 下一目标：${this.snookerTargetLabel()}`);
       } else {
         this.rule.currentPlayer = opponent;
       }
@@ -1052,6 +1108,7 @@
 
     loadDrill(kind) {
       if (this.world.isMoving()) { this.toast('请等待球静止后再切换实验'); return; }
+      this.cancelActiveDrags();
       this.exitPlacementSilently();
       if (this.world.mode !== 'chineseEight') this.world.setMode('chineseEight');
       else this.world.reset('chineseEight');
@@ -1107,12 +1164,21 @@
       this.toast(`已载入：${$(`[data-drill="${kind}"]`)?.textContent || '物理实验'}`);
     }
 
+    // Any live drag must die with the table it was aimed at — otherwise the
+    // held pointer's release fires a stray shot into the fresh layout.
+    cancelActiveDrags() {
+      if (this.drag) this.finishChargeDrag(true);
+      if (this.viewDrag) this.endViewDrag(true);
+      if (this.placementDrag) this.endPlacementDrag(true);
+    }
+
     changeMode(mode) {
       if (this.world.isMoving()) {
         $('#gameMode').value = this.world.mode;
         this.toast('请等球静止后再切换项目');
         return;
       }
+      this.cancelActiveDrags();
       this.exitPlacementSilently();
       this.clearDrillSelection();
       this.world.setMode(mode);
@@ -1128,6 +1194,7 @@
 
     resetRack() {
       const mode = this.world.mode;
+      this.cancelActiveDrags();
       this.exitPlacementSilently();
       this.clearDrillSelection();
       this.world.reset(mode);
@@ -1223,6 +1290,9 @@
       const dialog = $('#helpDialog');
       if (typeof dialog.showModal === 'function') dialog.showModal();
       else dialog.setAttribute('open', '');
+      // showModal focuses the × button; a habitual Space would then "click"
+      // it, silently closing the dialog and re-arming every shortcut.
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
     }
 
     closeHelp() {
@@ -1246,12 +1316,20 @@
       this.predictionTimer = setTimeout(() => { this.predictionTimer = null; this.updatePrediction(); }, delay);
     }
 
-    updatePrediction() {
-      if (!this.predictionDirty || !this.guidesEnabled || this.placement || this.world.isMoving()) return;
+    updatePrediction(extended = false) {
+      if ((!this.predictionDirty && !extended) || !this.guidesEnabled || this.placement || this.world.isMoving()) return;
       this.predictionDirty = false;
       this.lastPredictionAt = performance.now();
-      this.prediction = this.world.predictShot(this.shotOptions());
+      // The 40 ms budget keeps aiming fluid but can truncate a long shot's
+      // tail on slow machines; once the aim goes quiet, one 200 ms pass
+      // finishes the story so the drawn line ends where the balls really
+      // stop instead of silently hiding a late scratch.
+      this.prediction = this.world.predictShot(this.shotOptions(), 12, extended ? 200 : 40);
       this.updatePredictionMetrics();
+      clearTimeout(this.predictionUpgradeTimer);
+      if (this.prediction.truncated && !extended) {
+        this.predictionUpgradeTimer = setTimeout(() => { this.updatePrediction(true); }, 150);
+      }
     }
 
     // Metrics echo the prediction; whenever the prediction is switched off
@@ -1270,10 +1348,16 @@
         const id = event.aId === 'cue' ? event.bId : event.aId;
         const ball = this.world.getBall(id);
         $('#firstHitMetric').textContent = ball?.number != null ? `${ball.number} 号球` : ball?.label || id;
-      } else $('#firstHitMetric').textContent = '库边';
+      } else {
+        // No ball contact predicted: report what actually happens first —
+        // a cushion, a direct pocket drop, or nothing at all.
+        const firstTouch = this.prediction.events.find((e) => (e.type === 'cushion' || e.type === 'pocket') && e.ballId === 'cue');
+        $('#firstHitMetric').textContent = firstTouch ? (firstTouch.type === 'cushion' ? '库边' : '直接落袋') : '无接触';
+      }
       const contact = this.world.findAimContact(this.aimDirection);
       $('#cutAngleMetric').textContent = contact ? `${contact.cutAngle.toFixed(1)}°` : '—';
-      $('#pathMetric').textContent = `${this.prediction.cueDistance.toFixed(2)} m`;
+      $('#pathMetric').textContent = `${this.prediction.truncated ? '≥ ' : ''}${this.prediction.cueDistance.toFixed(2)} m`;
+      this.updateElevationUI();
       this.predictedRailEvent = this.prediction.events.find((item) => item.type === 'cushion' && item.ballId === 'cue') || null;
       $('#railEffectMetric').textContent = this.railEffectLabel(this.predictedRailEvent, true);
       const impact = this.world.cueImpactMetrics(this.shotOptions());
@@ -1313,7 +1397,7 @@
       this.renderer.render(this.world, {
         showCue: !moving && !this.paused && !this.placement,
         aimDirection: this.aimDirection,
-        elevation: this.elevation,
+        elevation: this.effectiveElevation(),
         pullback: this.pullback,
         tipX: this.tipX,
         tipY: this.tipY,
@@ -1590,7 +1674,10 @@
     }
 
     updateElevationUI() {
-      $('#elevationSlider').value = this.elevation; $('#elevationValue').textContent = `${this.elevation}°`; $('#elevationFill').style.width = `${this.elevation / 60 * 100}%`;
+      const effective = Math.round(this.effectiveElevation());
+      $('#elevationSlider').value = this.elevation;
+      $('#elevationValue').textContent = effective > this.elevation ? `${this.elevation}°→${effective}°` : `${this.elevation}°`;
+      $('#elevationFill').style.width = `${this.elevation / 60 * 100}%`;
       this.updateHud();
     }
 
@@ -1616,7 +1703,7 @@
       const trim = $('#hudTrim');
       trim.textContent = `${this.aimTrim > 0 ? '右 +' : this.aimTrim < 0 ? '左 −' : ''}${Math.abs(this.aimTrim).toFixed(2)}°`;
       trim.classList.toggle('hot', Math.abs(this.aimTrim) > 0.005);
-      $('#hudSpeed').textContent = `${this.elevation}° · ${impact.horizontalSpeed.toFixed(1)} m/s`;
+      $('#hudSpeed').textContent = `${Math.round(this.effectiveElevation())}° · ${impact.horizontalSpeed.toFixed(1)} m/s`;
     }
 
     updateSpinUI() {
@@ -1673,7 +1760,7 @@
       let hint = '瞄准线显示考虑当前杆法后的模拟轨迹';
       if ((this.world.mode === 'eight' || this.world.mode === 'chineseEight') && this.rule.groups[0]) hint = `P1 ${this.rule.groups[0] === 'solid' ? '全色' : '花色'} · P2 ${this.rule.groups[1] === 'solid' ? '全色' : '花色'}`;
       if (this.world.mode === 'nine') hint = `当前应先击打 ${this.lowestNineBall() ?? '—'} 号球`;
-      if (this.world.mode === 'snooker') hint = `当前目标：${this.snookerTargetLabel()}`;
+      if (this.world.mode === 'snooker') hint = this.rule.winner != null ? `本局已结束 · P${this.rule.winner + 1} 获胜` : `当前目标：${this.snookerTargetLabel()}`;
       $('#shotHint').textContent = hint;
     }
 

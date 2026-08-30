@@ -420,9 +420,12 @@
     const balls = [];
     const R = params.radius;
     const spacing = 2 * R + 0.0008;
-    balls.push(makeBall({ id: 'cue', label: '母球', kind: 'cue', color: SNOOKER_COLORS.cue, x: -1.12, z: -0.22 }, params));
+    // Cue starts inside the D (centre -0.89, radius 0.292).  Viewed from
+    // baulk toward the black, yellow sits on the striker's left (+z is the
+    // +x-facing striker's right): green-brown-yellow left to right.
+    balls.push(makeBall({ id: 'cue', label: '母球', kind: 'cue', color: SNOOKER_COLORS.cue, x: -0.96, z: -0.18 }, params));
     const colors = [
-      ['yellow', '黄球', 2, -0.89, -0.292], ['green', '绿球', 3, -0.89, 0.292],
+      ['yellow', '黄球', 2, -0.89, 0.292], ['green', '绿球', 3, -0.89, -0.292],
       ['brown', '棕球', 4, -0.89, 0], ['blue', '蓝球', 5, 0, 0],
       ['pink', '粉球', 6, 0.89, 0], ['black', '黑球', 7, 1.43, 0],
     ];
@@ -1368,19 +1371,21 @@
       return best;
     }
 
-    predictShot(options, maxTime = 5.5) {
+    predictShot(options, maxTime = 12, budgetMs = 40) {
       const clone = this.clone(true);
       const events = [];
       clone.onEvent((event) => events.push(event));
-      if (!clone.strike(options)) return { paths: new Map(), events: [], firstHit: null, cueDistance: 0, duration: 0 };
+      if (!clone.strike(options)) return { paths: new Map(), events: [], firstHit: null, cueDistance: 0, duration: 0, truncated: false };
       const initial = new Map(clone.balls.map((b) => [b.id, { ...b.pos }]));
       const paths = new Map(clone.balls.map((b) => [b.id, [{ ...b.pos, t: 0 }]]));
       const dt = 1 / 1000;
       const sampleEvery = 16;
-      // Aiming previews must never stall the pointer: cap the wall-clock cost
-      // and truncate the far tail of worst-case (full-rack) predictions.
+      // Aiming previews must never stall the pointer: cap the wall-clock cost.
+      // A capped run that ends while balls still move reports truncated:true
+      // so the UI can say "≥" instead of passing the cut-off off as the rest
+      // position (a 6 s scratch must not read as a safe stop).
       const clock = typeof performance !== 'undefined' ? performance : Date;
-      const deadline = clock.now() + 40;
+      const deadline = clock.now() + budgetMs;
       let step = 0;
       let stillFrames = 0;
       while (clone.shotTime < maxTime && step < maxTime / dt) {
@@ -1391,7 +1396,7 @@
             const path = paths.get(ball.id);
             const start = initial.get(ball.id);
             const moved = Math.hypot(ball.pos.x - start.x, ball.pos.z - start.z) > 0.0015;
-            if ((moved || path.length > 1 || ball.id === 'cue') && path.length < 420) {
+            if ((moved || path.length > 1 || ball.id === 'cue') && path.length < 780) {
               path.push({ x: ball.pos.x, z: ball.pos.z, t: clone.shotTime, pocketed: ball.pocketed, sink: ball.sinkDepth });
             }
           });
@@ -1405,7 +1410,7 @@
       const cuePath = paths.get('cue') || [];
       let cueDistance = 0;
       for (let i = 1; i < cuePath.length; i += 1) cueDistance += Math.hypot(cuePath[i].x - cuePath[i - 1].x, cuePath[i].z - cuePath[i - 1].z);
-      return { paths, events, firstHit, cueDistance, duration: clone.shotTime };
+      return { paths, events, firstHit, cueDistance, duration: clone.shotTime, truncated: clone.isMoving() };
     }
 
     totalEnergy() {
@@ -1466,7 +1471,7 @@
     respotCue() {
       const cue = this.getCueBall();
       if (!cue) return;
-      const preferred = this.mode === 'snooker' ? { x: this.table.cueStart, z: -0.22 } : { x: this.table.cueStart, z: 0 };
+      const preferred = this.mode === 'snooker' ? { x: -0.96, z: -0.18 } : { x: this.table.cueStart, z: 0 };
       this.respotBall(cue, preferred);
     }
 
