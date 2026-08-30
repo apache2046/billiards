@@ -638,13 +638,28 @@ function throwRig({ objectZ = 0, sideSpin = 0, roll = 0, speed = 1.5 }) {
   world.strike({ direction: { x: 1, z: 0 }, speed: 4.4, tipX: 0, tipY: -0.2, elevation: 30 });
   assert.ok(cue.velY > 0.8, `elevated strike should launch upward, got ${cue.velY.toFixed(2)}`);
   let apex = 0, sawAirborne = false;
+  // With the gravitational term in totalEnergy, free flight must hold the
+  // mechanical energy steady instead of dipping toward the apex.  The track
+  // covers one ballistic arc only: velY falls monotonically in flight, so a
+  // rise marks the (dissipative) landing bounce and ends the window.
+  let flightEnergy = null, flightDrift = 0, firstFlightOver = false, lastVelY = 0;
   for (let i = 0; i < 6000; i += 1) {
     world.step(1 / 600);
     apex = Math.max(apex, cue.posY);
-    if (cue.state === 'airborne') sawAirborne = true;
+    if (cue.state === 'airborne') {
+      sawAirborne = true;
+      if (!firstFlightOver) {
+        if (flightEnergy == null) flightEnergy = world.totalEnergy();
+        else if (cue.velY > lastVelY + 1e-9) firstFlightOver = true;
+        else flightDrift = Math.max(flightDrift, Math.abs(world.totalEnergy() - flightEnergy));
+      }
+      lastVelY = cue.velY;
+    } else if (flightEnergy != null) firstFlightOver = true;
     if (!world.isMoving()) break;
   }
   assert.ok(sawAirborne, 'jump shot never reported airborne state');
+  assert.ok(flightDrift < flightEnergy * 0.01,
+    `mechanical energy drifted ${(flightDrift / flightEnergy * 100).toFixed(2)}% during free flight`);
   assert.ok(apex > 0.05, `jump apex only ${apex.toFixed(3)} m`);
   assert.ok(Math.abs(cue.posY) < 1e-9, 'ball failed to return to the cloth');
 }

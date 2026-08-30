@@ -1365,11 +1365,15 @@
     }
 
     totalEnergy() {
+      // Full mechanical energy.  The gravitational term makes the readout an
+      // invariant through jump flight instead of dipping at the apex, and
+      // lets conservation assertions hold while a ball is airborne.
       return this.balls.reduce((sum, ball) => {
         if (ball.pocketed) return sum;
         const linear = 0.5 * ball.mass * (ball.vel.x * ball.vel.x + ball.velY * ball.velY + ball.vel.z * ball.vel.z);
         const angular = 0.5 * ball.inertia * (ball.omega.x * ball.omega.x + ball.omega.y * ball.omega.y + ball.omega.z * ball.omega.z);
-        return sum + linear + angular;
+        const potential = ball.mass * G * ball.posY;
+        return sum + linear + angular + potential;
       }, 0);
     }
 
