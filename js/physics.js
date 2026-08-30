@@ -801,7 +801,11 @@
       const closing = dx * rvx + dz * rvz;
       const relSpeedSq = rvx * rvx + rvz * rvz;
       let toi = 0;
-      if (closing < -1e-9 && relSpeedSq > 1e-12 && !a.railContact && !b.railContact) {
+      // The closing gate matches the impulse stage's -1e-5 threshold: a pair
+      // creeping together slower than that takes the positional relaxation
+      // (toi = 0) instead of parking in a window where a micro-TOI suppresses
+      // relaxation yet the impulse stage drops the contact as grazing.
+      if (closing < -1e-5 * minDistance && relSpeedSq > 1e-12 && !a.railContact && !b.railContact) {
         const discriminant = closing * closing - relSpeedSq * (distanceSq - minDistance * minDistance);
         if (discriminant > 0) toi = Math.max(0, Math.min(dt, (closing + Math.sqrt(discriminant)) / relSpeedSq));
       }
@@ -895,6 +899,10 @@
       // once, even when it appears in several contacts.
       if (toi > 0) {
         for (const ball of bodies) {
+          // A ball owned by a cushion episode joins a cluster only through
+          // the tie window, and its position belongs to the episode
+          // integrator — never to pair-solver surgery.
+          if (ball.railContact) continue;
           ball.pos.x -= ball.vel.x * toi;
           ball.pos.z -= ball.vel.z * toi;
         }
@@ -908,24 +916,8 @@
         const nz = distance > 1e-8 ? dz / distance : 0;
         const preRelN = (b.vel.x - a.vel.x) * nx + (b.vel.z - a.vel.z) * nz;
         if (preRelN >= -1e-5) continue;
-        // Full contact-point slip: the equator contact arms are ±R·n̂, so the
-        // relative surface velocity has an in-plane part (side spin + cut)
-        // and a vertical part (follow/draw rubbing), both taken in the shared
-        // pre-impact state.  Solving both in one friction cone is what makes
-        // a rolling cue ball throw less than a stun shot and lets follow/draw
-        // transfer between balls.
-        const rA = a.radius, rB = b.radius;
-        const tx = -nz, tz = nx;
-        const surfAX = a.vel.x + a.omega.y * nz * rA;
-        const surfAZ = a.vel.z - a.omega.y * nx * rA;
-        const surfAY = (a.omega.z * nx - a.omega.x * nz) * rA;
-        const surfBX = b.vel.x - b.omega.y * nz * rB;
-        const surfBZ = b.vel.z + b.omega.y * nx * rB;
-        const surfBY = -(b.omega.z * nx - b.omega.x * nz) * rB;
         live.push({
-          a, b, nx, nz, tx, tz, preRelN,
-          slipT: (surfBX - surfAX) * tx + (surfBZ - surfAZ) * tz,
-          slipY: surfBY - surfAY,
+          a, b, nx, nz, tx: -nz, tz: nx, preRelN,
           invA: 1 / a.mass, invB: 1 / b.mass, lambda: 0,
         });
       }
@@ -952,6 +944,31 @@
             applied = Math.max(applied, Math.abs(change));
           }
           if (applied < 1e-12) break;
+        }
+        // Full contact-point slip: the equator contact arms are ±R·n̂, so the
+        // relative surface velocity has an in-plane part (side spin + cut)
+        // and a vertical part (follow/draw rubbing).  Solving both in one
+        // friction cone is what makes a rolling cue ball throw less than a
+        // stun shot and lets follow/draw transfer between balls.  The slip is
+        // measured AFTER the normal stage: in a multi-contact cluster the
+        // OTHER contacts' normal impulses change this contact's tangential
+        // relative velocity, and friction built from stale pre-cluster slip
+        // can end up pointing along the true slip and pumping energy.  A
+        // contact's own normal impulse is tangent-orthogonal and torque-free,
+        // so for a single contact both measurements are identical and
+        // isolated collisions stay bit-exact.  All slips are snapshotted
+        // before any friction is applied, keeping symmetric clusters exact.
+        for (const c of live) {
+          const { a, b } = c;
+          const rA = a.radius, rB = b.radius;
+          const surfAX = a.vel.x + a.omega.y * c.nz * rA;
+          const surfAZ = a.vel.z - a.omega.y * c.nx * rA;
+          const surfAY = (a.omega.z * c.nx - a.omega.x * c.nz) * rA;
+          const surfBX = b.vel.x - b.omega.y * c.nz * rB;
+          const surfBZ = b.vel.z + b.omega.y * c.nx * rB;
+          const surfBY = -(b.omega.z * c.nx - b.omega.x * c.nz) * rB;
+          c.slipT = (surfBX - surfAX) * c.tx + (surfBZ - surfAZ) * c.tz;
+          c.slipY = surfBY - surfAY;
         }
         for (const c of live) {
           const { a, b } = c;
@@ -998,6 +1015,7 @@
       // Replay the rewound time with the post-impact velocities.
       if (toi > 0) {
         for (const ball of bodies) {
+          if (ball.railContact) continue;
           ball.pos.x += ball.vel.x * toi;
           ball.pos.z += ball.vel.z * toi;
         }
