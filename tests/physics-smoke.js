@@ -785,4 +785,70 @@ function throwRig({ objectZ = 0, sideSpin = 0, roll = 0, speed = 1.5 }) {
     `ball moved a further ${((cue.pos.z - settledPosition) * 1000).toFixed(2)} mm after settled`);
 }
 
+// Seeded fuzz: random tight ball clusters, free-field and rail-adjacent,
+// with random velocities and spins.  Mechanical energy must never rise and
+// every state must stay finite.  (totalEnergy cannot see energy parked in a
+// compressed cushion spring, so it dips during an episode and returns — the
+// max-over-time criterion is exactly the invariant.)  This net caught a ball
+// entering an episode with 4 mm of phantom compression after a mid-step
+// impulse redirection: the spring returned +3.8 J it never absorbed.
+{
+  let seed = 20260830;
+  const rand = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 2 ** 32);
+  const range = (lo, hi) => lo + (hi - lo) * rand();
+  const run = (nearRail) => {
+    const world = new PhysicsWorld('practice', { silent: true });
+    const keep = new Set(['cue', '1', '2', '3', '4', '5', '6', '7'].slice(0, 2 + Math.floor(rand() * 6)));
+    world.balls = world.balls.filter((b) => keep.has(b.id));
+    const R = world.params.radius;
+    const hw = world.table.width / 2, hh = world.table.height / 2;
+    const placed = [];
+    for (const ball of world.balls) {
+      let ok = false;
+      for (let attempt = 0; attempt < 40 && !ok; attempt += 1) {
+        let x, z;
+        if (!placed.length) {
+          x = range(-hw * 0.55, hw * 0.55);
+          z = nearRail ? hh - R - range(0, 0.003) : range(-hh * 0.5, hh * 0.5);
+        } else {
+          const anchor = placed[Math.floor(rand() * placed.length)];
+          const angle = range(0, Math.PI * 2);
+          x = anchor.pos.x + Math.cos(angle) * (2 * R + range(-0.0002, 0.0012));
+          z = anchor.pos.z + Math.sin(angle) * (2 * R + range(-0.0002, 0.0012));
+        }
+        if (Math.abs(x) > hw - R || Math.abs(z) > hh - R) continue;
+        if (placed.every((p) => Math.hypot(p.pos.x - x, p.pos.z - z) > 2 * R - 0.0005)) {
+          ball.pos = { x, z };
+          ok = true;
+        }
+      }
+      if (!ok) ball.pos = { x: range(-hw * 0.8, hw * 0.8), z: range(-hh * 0.8, hh * 0.8) };
+      const speed = rand() < 0.25 ? 0 : range(0, 6);
+      const heading = range(0, Math.PI * 2);
+      ball.vel = { x: Math.cos(heading) * speed, z: Math.sin(heading) * speed };
+      if (nearRail && rand() < 0.6) ball.vel.z = Math.abs(ball.vel.z);
+      ball.omega = { x: range(-80, 80), y: range(-80, 80), z: range(-80, 80) };
+      ball.state = speed > 0 ? 'sliding' : 'stationary';
+      placed.push(ball);
+    }
+    const e0 = world.totalEnergy();
+    let maxE = e0;
+    for (let i = 0; i < 40; i += 1) {
+      world.step(1 / 1000);
+      maxE = Math.max(maxE, world.totalEnergy());
+    }
+    const finite = world.balls.every((b) => Number.isFinite(
+      b.pos.x + b.pos.z + b.vel.x + b.vel.z + b.omega.x + b.omega.y + b.omega.z + b.posY + b.velY,
+    ));
+    return { e0, maxE, finite };
+  };
+  for (let trial = 0; trial < 600; trial += 1) {
+    const caseSeed = seed;
+    const r = run(trial % 2 === 1);
+    assert.ok(r.finite && Number.isFinite(r.maxE), `fuzz trial ${trial} (seed ${caseSeed}) went non-finite`);
+    assert.ok(!(r.e0 > 1e-6 && r.maxE / r.e0 > 1 + 1e-6),
+      `fuzz trial ${trial} (seed ${caseSeed}) created energy: maxE/E0=${(r.maxE / r.e0).toFixed(6)}`);
+  }
+}
+
 console.log('CueLab physics smoke tests passed.');

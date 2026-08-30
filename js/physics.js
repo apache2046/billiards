@@ -1029,6 +1029,19 @@
       const rewound = clamp(Math.min(dt, timeToTouch), 0, dt);
       ball.pos.x -= ball.vel.x * rewound;
       ball.pos.z -= ball.vel.z * rewound;
+      // Whatever penetration the rewind could not unwind was never absorbed
+      // by this spring: a mid-step impulse can redirect a ball deep into the
+      // rubber, and collider gaps at pocket mouths can let one tunnel for a
+      // step before a rail claims it.  Snap the entry to the engagement depth
+      // so an episode only ever returns work it really accumulated —
+      // monetising 4 mm of phantom compression once turned into +3.8 J.  An
+      // ordinary impact rewinds to exactly 10 µm and is left untouched.
+      const residual = primary.depth - approach * rewound;
+      if (residual > 4e-5) {
+        const pushOut = residual - 1e-5;
+        ball.pos.x += primary.nx * pushOut;
+        ball.pos.z += primary.nz * pushOut;
+      }
       this.integrateRailContact(ball, rewound, dt);
     }
 
