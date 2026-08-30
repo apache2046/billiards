@@ -415,6 +415,9 @@
       // the camera state carried over.
       this.glCanvas.addEventListener('webglcontextlost', (event) => {
         event.preventDefault();
+        // The forced pause is the handler's, not the user's: remember which,
+        // so restore does not resume a shot the user had deliberately frozen.
+        this.pausedBeforeContextLoss = this.paused;
         this.setPaused(true);
         this.toast('渲染上下文丢失，正在等待浏览器恢复…');
       });
@@ -428,7 +431,7 @@
           this.renderer.zoom = old.zoom;
           this.renderer.orbit = old.orbit ? { ...old.orbit } : null;
           this.renderer.updateCamera();
-          this.setPaused(false);
+          this.setPaused(this.pausedBeforeContextLoss === true);
           this.toast('渲染已恢复');
         } catch (error) {
           console.error(error);
@@ -507,7 +510,10 @@
         this.stage.classList.add('orbiting');
         return;
       }
-      if (event.button !== 0 || this.viewDrag || this.world.isMoving() || this.paused) return;
+      // A second primary pointer (second finger) must not usurp a live charge
+      // or placement drag — its release would fire a shot nobody meant.
+      if (event.button !== 0 || this.viewDrag || this.drag || this.placementDrag
+        || this.world.isMoving() || this.paused) return;
       this.sound.ensure();
       if (this.placement) { this.beginPlacementDrag(event); return; }
       this.updateAimFromPointer(event);
@@ -1557,7 +1563,10 @@
     drawEffects(ctx, time) {
       this.effects = this.effects.filter((effect) => time - effect.born < effect.life);
       this.effects.forEach((effect) => {
-        const age = (time - effect.born) / effect.life;
+        // The rAF timestamp can lag performance.now() (effect.born) by a full
+        // slow frame; a negative age once fed ctx.arc a negative radius,
+        // which throws and permanently kills the frame loop.
+        const age = Math.max(0, (time - effect.born) / effect.life);
         const p = this.renderer.project({ x: effect.position.x, y: 0.025, z: effect.position.z });
         if (!p) return;
         const color = effect.type === 'pocket' ? '229,189,101' : effect.type === 'rail' ? '190,224,212' : '97,244,199';
