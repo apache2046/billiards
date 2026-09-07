@@ -4,6 +4,7 @@
   const { PhysicsWorld, POOL_COLORS, PALLADIUM_COLORS } = window.BilliardsPhysics;
   const { BilliardsRenderer } = window.BilliardsRenderer;
   const { V2, clamp } = window.BilliardsMath;
+  const { createDrill } = window.BilliardsDrills;
 
   const BALL_SKINS = {
     tv: { label: 'TV 高清经典', colors: POOL_COLORS, cueColor: '#f0f3eb' },
@@ -196,7 +197,7 @@
       this.paused = false;
       this.slowMotionRate = 1;
       this.guidesEnabled = true;
-      this.gridEnabled = true;
+      this.gridEnabled = false;
       this.trailsEnabled = true;
       this.prediction = null;
       this.predictionDirty = true;
@@ -220,12 +221,16 @@
       this.fpsTime = performance.now();
       this.wasMoving = false;
       this.toastTimer = null;
-      this.assists = { trajectory: true, ghost: true, tangent: true, pocket: true };
+      this.assists = { trajectory: true, ghost: true, tangent: false, pocket: false };
+      this.focused = false;
 
       this.bindUI();
+      this.restorePreferences();
+      this.preferencesReady = true;
       this.world.onEvent((event) => this.handlePhysicsEvent(event));
       this.updateAllUI();
       this.applyStartupParams();
+      this.updateToggleButtons();
       this.schedulePrediction(true);
       requestAnimationFrame((time) => this.frame(time));
     }
@@ -296,7 +301,8 @@
     }
 
     emptyShotRecord() {
-      return { firstContact: null, potted: [], lowestAtStart: null, expectedAtStart: null };
+      return { firstContact: null, potted: [], lowestAtStart: null, expectedAtStart: null,
+        cueRail: null, returnedCueRail: null };
     }
 
     createRuleState(mode) {
@@ -311,12 +317,36 @@
     }
 
     bindUI() {
+      $$('[data-panel]').forEach((button) => {
+        button.addEventListener('click', () => this.selectPanel(button));
+        button.addEventListener('keydown', (event) => {
+          if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+          event.preventDefault();
+          const tabs = $$('[data-panel]');
+          const next = event.key === 'Home' ? tabs[0] : event.key === 'End' ? tabs[tabs.length - 1] : tabs.find((tab) => tab !== button);
+          this.selectPanel(next); next.focus();
+        });
+      });
+      $('#focusToggle').addEventListener('click', () => this.toggleFocus());
+      $('#panelHelp').addEventListener('click', () => this.openHelp());
+      $('#tableTheme').addEventListener('change', (event) => {
+        this.renderer.tableTheme = event.target.value;
+        this.savePreferences();
+      });
       $('#gameMode').addEventListener('change', (event) => this.changeMode(event.target.value));
       $('#resetButton').addEventListener('click', () => this.resetRack());
       $('#soundToggle').addEventListener('click', () => {
         this.sound.setEnabled(!this.sound.enabled);
         $('#soundToggle').classList.toggle('muted', !this.sound.enabled);
+        $('#soundToggle').setAttribute('aria-pressed', String(this.sound.enabled));
+        $('#soundSetting').checked = this.sound.enabled;
+        this.savePreferences();
         this.toast(this.sound.enabled ? '碰撞声音已开启' : '声音已关闭');
+      });
+      $('#soundSetting').addEventListener('change', (event) => {
+        this.sound.setEnabled(event.target.checked);
+        $('#soundToggle').classList.toggle('muted', !this.sound.enabled);
+        this.updateToggleButtons(); this.savePreferences();
       });
 
       $('#helpButton').addEventListener('click', () => this.openHelp());
@@ -325,7 +355,7 @@
         if (event.target === $('#helpDialog')) this.closeHelp();
       });
 
-      $('#shootButton').addEventListener('click', () => this.shoot());
+      $('#shootButton').addEventListener('click', () => this.performPrimaryAction());
       $('#powerSlider').addEventListener('input', (event) => {
         this.power = Number(event.target.value) / 100;
         this.updatePowerUI(); this.schedulePrediction();
@@ -364,14 +394,17 @@
       $('#guideToggle').addEventListener('click', () => this.toggleGuides());
       $('#diamondToggle').addEventListener('click', () => {
         this.gridEnabled = !this.gridEnabled; $('#diamondToggle').classList.toggle('active', this.gridEnabled);
+        this.updateToggleButtons(); this.savePreferences();
       });
       $('#trailToggle').addEventListener('click', () => {
         this.trailsEnabled = !this.trailsEnabled; $('#trailToggle').classList.toggle('active', this.trailsEnabled);
         if (!this.trailsEnabled) this.actualTrails.clear();
+        this.updateToggleButtons(); this.savePreferences();
       });
       $('#cameraButton').addEventListener('click', () => {
         const mode = this.renderer.toggleCamera();
         $('#cameraButton').classList.toggle('active', mode === 'top');
+        this.updateToggleButtons();
         this.schedulePrediction(true);
       });
 
@@ -384,6 +417,7 @@
       const updateAssistAllLabel = () => {
         const anyOff = Object.values(this.assists).some((value) => !value);
         $('#assistAll').textContent = anyOff ? '全部开启' : '全部关闭';
+        this.savePreferences();
       };
       Object.entries(assistMap).forEach(([id, key]) => $(`#${id}`).addEventListener('change', (event) => {
         this.assists[key] = event.target.checked;
@@ -444,22 +478,19 @@
       $('#ballSkin').addEventListener('change', (event) => this.setBallSkin(event.target.value));
 
       window.addEventListener('keydown', (event) => {
-        // Global shortcuts must survive a click on any panel control: only a
-        // real text-entry context owns the keyboard.  For a focused button,
-        // select, slider or checkbox the shortcut wins and the control is
-        // blurred at the keypress itself, so Space always shoots instead of
-        // re-triggering the widget.  Arrow keys are left native (they still
-        // nudge a clicked slider or select).
+        // Preserve native Space activation for focused controls. On the
+        // table, Space remains the primary action; sliders keep arrow keys.
         const active = document.activeElement;
         const typing = active && (active.tagName === 'TEXTAREA' || active.isContentEditable
           || (active.tagName === 'INPUT' && !/^(range|checkbox|radio|button)$/.test(active.type)));
         if (typing) return;
+        if (event.code === 'Space' && active?.matches('button, input, select')) return;
         this.shiftHeld = event.shiftKey;
         if (event.ctrlKey || event.metaKey || event.altKey) return;
         if ($('#helpDialog').open) return; // the dialog owns the keyboard (Esc closes it natively)
         const key = event.key.toLowerCase();
         const shortcut = event.code === 'Space' || event.key === 'Escape'
-          || ADJUST_KEYS.has(key) || 'rgmxb'.includes(key);
+          || ADJUST_KEYS.has(key) || 'rgmxbf'.includes(key);
         if (shortcut && active && active !== document.body && typeof active.blur === 'function') active.blur();
         if (ADJUST_KEYS.has(key)) {
           this.keys.add(key);
@@ -467,12 +498,13 @@
           return;
         }
         if (event.repeat) return;
-        if (event.code === 'Space') { event.preventDefault(); this.shoot(); }
+        if (event.code === 'Space') { event.preventDefault(); this.performPrimaryAction(); }
         else if (key === 'r') this.resetRack();
         else if (key === 'g') this.toggleGuides();
         else if (key === 'm') { $('#slowButton').click(); }
         else if (key === 'x') this.resetAimTrim();
         else if (key === 'b') this.togglePlacement();
+        else if (key === 'f') this.toggleFocus();
         else if (event.key === 'Escape') this.togglePause();
       });
       window.addEventListener('keyup', (event) => {
@@ -486,6 +518,15 @@
     bindSpinControl() {
       const control = $('#spinControl');
       let activePointer = null;
+      control.addEventListener('keydown', (event) => {
+        const delta = event.shiftKey ? 0.08 : 0.02;
+        const changes = { ArrowLeft: [-delta, 0], ArrowRight: [delta, 0], ArrowUp: [0, delta], ArrowDown: [0, -delta] };
+        if (event.key === 'Home') { event.preventDefault(); this.setSpin(0, 0); }
+        else if (changes[event.key]) {
+          event.preventDefault();
+          this.setSpin(this.tipX + changes[event.key][0], this.tipY + changes[event.key][1]);
+        }
+      });
       const update = (event) => {
         const rect = control.getBoundingClientRect();
         let x = (event.clientX - (rect.left + rect.width / 2)) / (rect.width * 0.39);
@@ -715,7 +756,7 @@
 
     clearDrillSelection() {
       this.activeDrill = null;
-      $$('[data-drill]').forEach((button) => button.classList.remove('active'));
+      $$('[data-drill]').forEach((button) => { button.classList.remove('active'); button.setAttribute('aria-pressed', 'false'); });
       $('#drillHint').textContent = this.defaultDrillHint;
     }
 
@@ -741,6 +782,7 @@
       ball.sinkTime = 1; ball.sinkDepth = ball.radius * 3.2; ball.sinkTarget = null;
       ball.vel = { x: 0, z: 0 }; ball.omega = { x: 0, y: 0, z: 0 };
       ball.state = 'pocketed';
+      ball.pocketFall = null; ball.posY = 0; ball.velY = 0; ball.railContact = null; ball.railTravel = null;
     }
 
     spawnFromTray(id) {
@@ -893,6 +935,8 @@
         this.sound.click('rail', clamp(event.speed / 4, 0.08, 0.85), pan);
         this.addEffect(event.position, 'rail', event.speed);
         if (event.ballId === 'cue') {
+          this.shotRecord.cueRail = event;
+          if (event.returned) this.shotRecord.returnedCueRail = event;
           $('#statusText').textContent = `${this.railEffectLabel(event)} · 入 ${event.incidentAngle.toFixed(1)}° → 出 ${event.reboundAngle.toFixed(1)}° · 胶边压缩 ${(event.compression * 1000).toFixed(1)} mm`;
         }
       } else if (event.type === 'pocket') {
@@ -922,7 +966,7 @@
       const cueFoul = this.shotRecord.potted.includes('cue');
       if (this.activeDrill) {
         if (cueFoul) this.world.respotCue();
-        const rail = this.world.lastCushionEvent;
+        const rail = this.shotRecord.returnedCueRail || this.shotRecord.cueRail;
         this.toast(rail
           ? `${this.railEffectLabel(rail)}：入射 ${rail.incidentAngle.toFixed(1)}°，反弹 ${rail.reboundAngle.toFixed(1)}°，胶边压缩 ${(rail.compression * 1000).toFixed(1)} mm`
           : '实验完成；点击同一场景可复位后做对照');
@@ -1092,17 +1136,17 @@
 
     railEffectLabel(event, compact = false) {
       if (!event) return '—';
-      const english = { running: '顺塞', reverse: '反塞', side: '纯侧塞', neutral: '中杆' }[event.english] || '中杆';
-      if (compact) {
-        if (event.english === 'neutral' && event.followRatio > 0.24) return '顺旋吸库';
-        if (event.english === 'neutral' && event.followRatio < -0.24) return '低杆吃库';
-        return event.frictionMode === 'stick' && event.english !== 'neutral' ? `${english}·软` : english;
-      }
+      if (event.returned) return compact ? '回吸同库' : `回吸同库 · 离库 ${(event.returnDistance * 100).toFixed(1)} cm`;
+      const english = { running: '顺塞', reverse: '反塞', side: '纯侧塞', neutral: '无侧塞' }[event.english] || '无侧塞';
+      const ratio = event.spinRatio || 0;
+      const rotation = ratio < -0.10 ? '后旋入库' : ratio > 1.15 ? '过量前旋'
+        : ratio >= 0.85 ? '自然滚动' : ratio > 0.10 ? '前旋入库' : '滑行入库';
+      if (compact) return event.english === 'neutral' ? rotation
+        : event.frictionMode === 'stick' ? `${english}·软` : english;
       const parts = [english];
       if (event.frictionMode === 'stick' && event.english !== 'neutral') parts.push('软塞黏着区');
       else if (event.frictionMode === 'slide' && event.english !== 'neutral') parts.push('滑移区');
-      if (event.followRatio > 0.24) parts.push('顺旋吸库');
-      else if (event.followRatio < -0.24) parts.push('低杆吃库');
+      parts.push(rotation);
       return parts.join(' · ');
     }
 
@@ -1121,6 +1165,7 @@
       const place = (ball, position) => {
         ball.pos = { ...position }; ball.vel = { x: 0, z: 0 }; ball.omega = { x: 0, y: 0, z: 0 };
         ball.posY = 0; ball.velY = 0;
+        ball.railContact = null; ball.railTravel = null; ball.pocketFall = null;
         ball.rotation = [0, 0, 0, 1]; ball.pocketed = false; ball.pocketId = null;
         ball.sinkTime = 0; ball.sinkDepth = 0; ball.sinkTarget = null; ball.lastSpeed = 0; ball.state = 'stationary';
       };
@@ -1129,36 +1174,21 @@
         ball.vel = { x: 0, z: 0 }; ball.omega = { x: 0, y: 0, z: 0 }; ball.state = 'pocketed';
       });
       const cue = this.world.getCueBall();
-      const R = cue.radius, H = this.world.table.height;
-      const setups = {
-        railFrozen: {
-          cue: { x: 0.20, z: H / 2 - R - 0.00015 }, target: { x: 0.78, z: H / 2 - R - 0.00015 },
-          aim: { x: 1, z: 0 }, spin: { x: 0, y: 0 }, power: 0.34, elevation: 1,
-          hint: '母球与 1 号球都贴长库。观察目标球沿库到圆弧袋角时，是进袋、晃袋还是被圆角弹出。',
-        },
-        english: {
-          cue: { x: -0.50, z: -0.27 }, aim: V2.normalize({ x: 0.50, z: 1 }),
-          spin: { x: -0.45, y: 0 }, power: 0.48, elevation: 3,
-          hint: '当前是左塞顺塞。击打一杆后撤销，只改成右塞再打；对照首库“入/出角”和让点读数。',
-        },
-        follow: {
-          cue: { x: -0.55, z: 0 }, aim: { x: 1, z: 0 },
-          spin: { x: 0, y: 0.45 }, power: 0.58, elevation: 2,
-          hint: '高杆正撞短库。先打高杆，再撤销改定杆/低杆，比较库后速度、回旋残量与停止距离。',
-        },
-      };
-      const setup = setups[kind] || setups.english;
+      const setup = createDrill(kind, this.world.table, cue.radius);
       place(cue, setup.cue);
       if (setup.target) place(this.world.getBall('1'), setup.target);
       this.aimDirection = { ...setup.aim };
       this.tipX = setup.spin.x; this.tipY = setup.spin.y;
       this.power = setup.power; this.elevation = setup.elevation;
-      this.activeDrill = kind;
+      this.activeDrill = setup.id;
       this.rule = this.createRuleState('chineseEight'); this.shotNumber = 1;
       this.undoStack.length = 0; this.actualTrails.clear(); this.effects.length = 0;
       this.shotRecord = this.emptyShotRecord(); this.prediction = null;
       $('#gameMode').value = 'chineseEight';
-      $$('[data-drill]').forEach((button) => button.classList.toggle('active', button.dataset.drill === kind));
+      $$('[data-drill]').forEach((button) => {
+        const active = button.dataset.drill === setup.id;
+        button.classList.toggle('active', active); button.setAttribute('aria-pressed', String(active));
+      });
       $('#drillHint').textContent = setup.hint;
       this.updateAllUI(); this.schedulePrediction(true);
       this.toast(`已载入：${$(`[data-drill="${kind}"]`)?.textContent || '物理实验'}`);
@@ -1208,15 +1238,12 @@
     }
 
     undo() {
-      // Mid-flight undo is allowed once the simulation is paused — which is
-      // exactly what the toast advises.  The snapshot predates the strike, so
-      // restoring it aborts the flight; the shot record and any pending settle
-      // belong to that aborted shot and must go with it, and the table comes
-      // back stationary, so aiming resumes immediately instead of staying
-      // frozen behind the pause.
-      if (this.world.isMoving() && !this.paused) { this.toast('请先暂停或等待球静止'); return; }
+      // Restoring the pre-strike snapshot is atomic, so undo can also abort
+      // an active shot. Clear gestures and queued shot events with it.
       const snapshot = this.undoStack.pop();
       if (!snapshot) { this.toast('暂无可撤销的击球'); return; }
+      this.cancelActiveDrags();
+      this.accumulator = 0;
       this.world.restore(snapshot.world); this.rule = snapshot.rule; this.shotNumber = snapshot.shotNumber; this.aimDirection = snapshot.aimDirection;
       this.applyBallSkinColors();
       this.shotRecord = this.emptyShotRecord();
@@ -1229,6 +1256,7 @@
       this.paused = value;
       $('#pauseButton').classList.toggle('paused', value);
       $('#pauseButton span').textContent = value ? '继续' : '暂停';
+      $('#pauseButton').setAttribute('aria-label', value ? '继续模拟' : '暂停模拟');
     }
 
     setBallSkin(skin, quiet = false) {
@@ -1237,6 +1265,7 @@
       $('#ballSkin').value = skin;
       this.renderer.setBallStyle(skin);
       this.applyBallSkinColors();
+      if (!quiet) this.savePreferences();
       this.schedulePrediction(true);
       if (!quiet) this.toast(`球组外观：${BALL_SKINS[skin].label}`);
     }
@@ -1284,6 +1313,71 @@
       $('#guideToggle').classList.toggle('active', this.guidesEnabled);
       if (this.guidesEnabled) this.schedulePrediction(true);
       else { this.prediction = null; this.clearPredictionMetrics(); }
+      this.updateToggleButtons(); this.savePreferences();
+    }
+
+    selectPanel(button) {
+      $$('[data-panel]').forEach((tab) => {
+        const selected = tab === button;
+        tab.setAttribute('aria-selected', String(selected));
+        tab.tabIndex = selected ? 0 : -1;
+        $(`#${tab.dataset.panel}`).hidden = !selected;
+      });
+      $('.panel-scroll').scrollTop = 0;
+    }
+
+    toggleFocus() {
+      this.focused = !this.focused;
+      $('#app').classList.toggle('focused', this.focused);
+      $('#focusToggle').setAttribute('aria-pressed', String(this.focused));
+      $('#focusToggle span').textContent = this.focused ? '显示设置' : '专注球台';
+      $('#controlPanel').inert = this.focused;
+      this.cancelActiveDrags();
+    }
+
+    performPrimaryAction() {
+      if (this.placement) this.togglePlacement();
+      else if (this.paused) this.setPaused(false);
+      else if (this.rule.winner != null) this.resetRack();
+      else this.shoot();
+    }
+
+    updateToggleButtons() {
+      const states = { guideToggle: this.guidesEnabled, diamondToggle: this.gridEnabled, trailToggle: this.trailsEnabled, cameraButton: this.renderer.cameraMode === 'top', soundToggle: this.sound.enabled };
+      Object.entries(states).forEach(([id, value]) => {
+        $(`#${id}`).setAttribute('aria-pressed', String(value));
+        if (id !== 'soundToggle') $(`#${id}`).classList.toggle('active', value);
+      });
+      $('#cameraButton').setAttribute('aria-label', this.renderer.cameraMode === 'top' ? '切换透视视角' : '切换俯视视角');
+    }
+
+    restorePreferences() {
+      try {
+        const saved = JSON.parse(localStorage.getItem('cuelab.preferences') || '{}');
+        for (const key of ['guidesEnabled', 'gridEnabled', 'trailsEnabled']) if (typeof saved[key] === 'boolean') this[key] = saved[key];
+        if (['club', 'blue', 'classic'].includes(saved.tableTheme)) this.renderer.tableTheme = saved.tableTheme;
+        if (BALL_SKINS[saved.ballSkin]) this.setBallSkin(saved.ballSkin, true);
+        if (typeof saved.sound === 'boolean') this.sound.enabled = saved.sound;
+        for (const key of Object.keys(this.assists)) if (typeof saved.assists?.[key] === 'boolean') this.assists[key] = saved.assists[key];
+      } catch { /* File URLs and private browsing may restrict storage. */ }
+      $('#tableTheme').value = this.renderer.tableTheme;
+      $('#soundToggle').classList.toggle('muted', !this.sound.enabled);
+      $('#soundSetting').checked = this.sound.enabled;
+      Object.entries({ assistTrajectory: 'trajectory', assistGhost: 'ghost', assistTangent: 'tangent', assistPocket: 'pocket' }).forEach(([id, key]) => { $(`#${id}`).checked = this.assists[key]; });
+      $('#assistAll').textContent = Object.values(this.assists).some((value) => !value) ? '全部开启' : '全部关闭';
+      this.updateToggleButtons();
+    }
+
+    savePreferences() {
+      // bindUI sets initial labels before restorePreferences; don't overwrite
+      // a returning player's settings during that initialization.
+      if (!this.preferencesReady) return;
+      try {
+        localStorage.setItem('cuelab.preferences', JSON.stringify({
+          guidesEnabled: this.guidesEnabled, gridEnabled: this.gridEnabled, trailsEnabled: this.trailsEnabled,
+          tableTheme: this.renderer.tableTheme, ballSkin: this.ballSkin, sound: this.sound.enabled, assists: this.assists,
+        }));
+      } catch { /* Preferences are optional; offline play must still work. */ }
     }
 
     openHelp() {
@@ -1352,9 +1446,10 @@
         // No ball contact predicted: report what actually happens first —
         // a cushion, a direct pocket drop, or nothing at all.
         const firstTouch = this.prediction.events.find((e) => (e.type === 'cushion' || e.type === 'pocket') && e.ballId === 'cue');
-        $('#firstHitMetric').textContent = firstTouch ? (firstTouch.type === 'cushion' ? '库边' : '直接落袋') : '无接触';
+        $('#firstHitMetric').textContent = firstTouch ? (firstTouch.type === 'cushion' ? '库边' : '直接落袋')
+          : this.prediction.truncated ? '尚未到达' : '无接触';
       }
-      const contact = this.world.findAimContact(this.aimDirection);
+      const contact = this.predictedAimContact();
       $('#cutAngleMetric').textContent = contact ? `${contact.cutAngle.toFixed(1)}°` : '—';
       $('#pathMetric').textContent = `${this.prediction.truncated ? '≥ ' : ''}${this.prediction.cueDistance.toFixed(2)} m`;
       this.updateElevationUI();
@@ -1363,6 +1458,24 @@
       const impact = this.world.cueImpactMetrics(this.shotOptions());
       const allowance = impact.aimAllowancePerMetre * 1000;
       $('#allowanceMetric').textContent = allowance < 0.05 ? '0 mm/m' : `${impact.tipX > 0 ? '右' : '左'} ${allowance.toFixed(1)} mm/m`;
+    }
+
+    predictedAimContact() {
+      const event = this.prediction?.firstHit, cue = this.world.getCueBall();
+      if (!event || !cue) return null;
+      // A straight aiming ray cannot describe squirt, swerves or jump shots.
+      // Build planar teaching aids from the simulated first collision only;
+      // a spatial impact has no meaningful table-plane ghost or 90° line.
+      if (Math.abs(event.normal.y || 0) > 1e-5 || (event.position.y || 0) > cue.radius + 1e-5) return null;
+      const cueIsA = event.aId === 'cue';
+      const target = this.world.getBall(cueIsA ? event.bId : event.aId);
+      const incoming = cueIsA ? event.incomingA : event.incomingB;
+      if (!target || !incoming || V2.length(incoming) < 1e-8) return null;
+      const normal = V2.scale(event.normal, cueIsA ? 1 : -1);
+      const ghost = V2.sub(event.position, V2.scale(normal, cue.radius));
+      const ball = { ...target, pos: V2.add(event.position, V2.scale(normal, target.radius)) };
+      return { ball, ghost, normal,
+        cutAngle: Math.acos(clamp(V2.dot(V2.normalize(incoming), normal), -1, 1)) * 180 / Math.PI };
     }
 
     frame(time) {
@@ -1404,6 +1517,7 @@
       });
       this.drawGuides(time);
       this.updateLiveTelemetry();
+      this.updateActionUI();
       this.updateFps(time);
       requestAnimationFrame((next) => this.frame(next));
     }
@@ -1413,7 +1527,7 @@
         if (ball.pocketed || Math.hypot(ball.vel.x, ball.vel.z) < 0.008) return;
         if (!this.actualTrails.has(ball.id)) this.actualTrails.set(ball.id, []);
         const path = this.actualTrails.get(ball.id);
-        path.push({ ...ball.pos });
+        path.push({ ...ball.pos, y: ball.posY });
         if (path.length > 420) path.shift();
       });
     }
@@ -1509,7 +1623,7 @@
       this.drawAimAllowance(ctx);
       this.drawCushionImpactGuide(ctx);
 
-      const contact = this.world.findAimContact(this.aimDirection);
+      const contact = this.predictedAimContact();
       if (!contact) return;
       const cue = this.world.getCueBall();
       if (this.assists.ghost) {
@@ -1578,7 +1692,8 @@
     drawWorldPath(ctx, path) {
       let started = false; ctx.beginPath();
       for (const point of path) {
-        const screen = this.renderer.project({ x: point.x, y: 0.009, z: point.z });
+        if (point.pocketed) break;
+        const screen = this.renderer.project({ x: point.x, y: Math.max(0, point.y || 0) + 0.009, z: point.z });
         if (!screen) continue;
         if (!started) { ctx.moveTo(screen.x, screen.y); started = true; } else ctx.lineTo(screen.x, screen.y);
       }
@@ -1588,7 +1703,8 @@
     drawPathDots(ctx, path, color) {
       ctx.fillStyle = color;
       for (let i = 18; i < path.length; i += 28) {
-        const p = this.renderer.project({ x: path[i].x, y: 0.012, z: path[i].z });
+        if (path[i].pocketed) break;
+        const p = this.renderer.project({ x: path[i].x, y: Math.max(0, path[i].y || 0) + 0.012, z: path[i].z });
         if (!p) continue;
         ctx.beginPath(); ctx.arc(p.x, p.y, 1.7, 0, Math.PI * 2); ctx.fill();
       }
@@ -1618,7 +1734,7 @@
         const vector = V2.sub(pocket, ball.pos), distance = V2.length(vector), direction = V2.normalize(vector);
         const angle = Math.acos(clamp(V2.dot(direction, outgoing), -1, 1));
         const obstruction = this.world.balls.some((other) => {
-          if (other === ball || other.pocketed || other.id === 'cue') return false;
+          if (other.id === ball.id || other.pocketed || other.id === 'cue') return false;
           const rel = V2.sub(other.pos, ball.pos); const along = V2.dot(rel, direction);
           if (along <= 0 || along >= distance) return false;
           const side = Math.abs(V2.cross(rel, direction));
@@ -1669,6 +1785,7 @@
     updatePowerUI() {
       const value = Math.round(this.power * 100);
       $('#powerSlider').value = value; $('#powerValue').textContent = `${value}%`; $('#powerFill').style.width = `${value}%`;
+      $('#powerSlider').style.setProperty('--progress', `${(value - 3) / 97 * 100}%`);
       $('#dragPowerBar').style.width = `${value}%`; $('#dragPowerLabel').textContent = `${value}%`;
       this.updateSpinUI();
     }
@@ -1678,6 +1795,7 @@
       $('#elevationSlider').value = this.elevation;
       $('#elevationValue').textContent = effective > this.elevation ? `${this.elevation}°→${effective}°` : `${this.elevation}°`;
       $('#elevationFill').style.width = `${this.elevation / 60 * 100}%`;
+      $('#elevationSlider').style.setProperty('--progress', `${this.elevation / 60 * 100}%`);
       this.updateHud();
     }
 
@@ -1718,6 +1836,12 @@
       const allowance = impact.aimAllowancePerMetre * 1000;
       $('#spinAllowanceValue').textContent = allowance < 0.05 ? '0 mm/m' : `${impact.tipX > 0 ? '向右' : '向左'} ${allowance.toFixed(1)} mm/m`;
       marker.classList.toggle('warning', impact.miscueMargin < 0.035);
+      $('#spinControl').setAttribute('aria-label', `母球击点：横向 ${Math.round(this.tipX * 100)}%，纵向 ${Math.round(this.tipY * 100)}%；方向键微调，Home 回中`);
+      $$('.presets button').forEach((button) => {
+        const [x, y] = button.dataset.spin.split(',').map(Number);
+        const active = Math.abs(x - this.tipX) < 0.015 && Math.abs(y - this.tipY) < 0.015;
+        button.classList.toggle('active', active); button.setAttribute('aria-pressed', String(active));
+      });
       this.updateHud();
     }
 
@@ -1726,6 +1850,7 @@
       const cloth = $('#clothPreset')?.selectedOptions[0]?.text || '标准台呢';
       const endMass = (cue.effectiveEndMass * 1000).toFixed(1);
       $('#equipmentHint').textContent = `${table.name} · ${cloth}${table.clothNapStrength ? ' / 顺毛参与阻力' : ''} · ${cue.detail}（前端有效质量 ${endMass} g）/ ${tip.label}`;
+      $('#tableSpecs').textContent = `${table.width.toFixed(2)} × ${table.height.toFixed(2)} m 台面 · ${(this.world.params.radius * 2000).toFixed(2)} mm 比赛球\n角袋 ${Math.round(table.cornerMouth * 1000)} mm · 中袋 ${Math.round(table.sideMouth * 1000)} mm`;
     }
 
     updateMotionUI(moving) {
@@ -1734,7 +1859,31 @@
       $('.stage-status').classList.toggle('busy', moving);
       $('#statusEyebrow').textContent = moving ? 'SIMULATING · 物理解算中' : 'READY · 准备击球';
       $('#statusText').textContent = moving ? '观察旋转、碰撞与走位' : this.activeDrill ? '实验球位已固定；打一杆后撤销可做对照' : '移动指针瞄准，向后拖动击球';
-      $('#shootButton').disabled = moving;
+      this.updateActionUI(moving);
+    }
+
+    updateActionUI(moving = this.world.isMoving()) {
+      const button = $('#shootButton');
+      const label = this.placement ? '完成摆球' : this.paused ? '继续模拟' : this.rule.winner != null ? '再来一局' : moving ? '球运动中' : '击球';
+      button.disabled = moving && !this.paused && !this.placement;
+      if (button.querySelector('strong').textContent !== label) button.querySelector('strong').textContent = label;
+      $('#undoButton').disabled = this.undoStack.length === 0;
+      $('#pauseButton').setAttribute('aria-pressed', String(this.paused));
+      const feedback = $('#shotFeedback');
+      const impact = this.lastImpactMetrics;
+      const scratch = this.prediction?.events.some((event) => event.type === 'pocket' && event.ballId === 'cue');
+      const warning = !moving && !this.paused && !this.placement && (impact?.miscue || scratch);
+      const message = this.placement ? '拖动球调整布局，完成后即可击球。'
+        : this.paused ? '模拟已暂停，点击底部按钮继续。'
+        : moving ? '正在走位，可以暂停或切换慢动作观察。'
+        : this.rule.winner != null ? `P${this.rule.winner + 1} 获胜，点击「再来一局」重新开始。`
+        : impact?.miscue ? '击点接近球边，容易疵杆。向中心收一点。'
+        : scratch ? '预测母球会落袋，试着减小力度或调整杆法。'
+        : this.effectiveElevation() >= 40 ? '抬杆弧线含腾空与落地过程；起跳幅度尚未按实台标定。'
+        : this.effectiveElevation() > this.elevation + 1 ? '母球靠近库边，球杆已自动抬高以避让。'
+        : '已准备好，瞄准后点击击球或按空格。';
+      if (feedback.textContent !== message) feedback.textContent = message;
+      feedback.classList.toggle('warning', Boolean(warning));
     }
 
     updateLiveTelemetry() {
@@ -1742,11 +1891,12 @@
       const speed = cue && !cue.pocketed ? Math.hypot(cue.vel.x, cue.vel.z) : 0;
       const rpm = cue && !cue.pocketed ? Math.hypot(cue.omega.x, cue.omega.y, cue.omega.z) * 60 / (2 * Math.PI) : 0;
       $('#speedValue').textContent = speed.toFixed(2); $('#liveRpmValue').textContent = Math.round(rpm);
-      const stateLabels = { stationary: '静止', sliding: '滑动', rolling: '纯滚动', spinning: '原地旋转', airborne: '腾空', pocketed: '已落袋' };
+      const stateLabels = { stationary: '静止', sliding: '滑动', rolling: '纯滚动', spinning: '原地旋转', airborne: '腾空', falling: '袋沿下落', pocketed: '已落袋' };
       $('#motionStateValue').textContent = stateLabels[cue?.state] || '静止';
       if (cue && !cue.pocketed) {
         const slip = Math.hypot(cue.vel.x + cue.omega.z * cue.radius, cue.vel.z - cue.omega.x * cue.radius);
-        $('#slipValue').textContent = slip > 0.012 ? `滑差 ${slip.toFixed(2)}` : '无滑动';
+        $('#slipValue').textContent = cue.posY > 1e-6 || cue.velY > 1e-6 ? `离台 ${(Math.max(0, cue.posY) * 100).toFixed(1)} cm`
+          : cue.pocketFall ? '袋沿失去支撑' : slip > 0.012 ? `滑差 ${slip.toFixed(2)}` : '无滑动';
       } else $('#slipValue').textContent = '—';
       $('#energyValue').textContent = this.world.totalEnergy().toFixed(2);
       const progress = this.world.inShot ? clamp(this.world.shotTime / Math.max(0.2, this.predictedShotDuration), 0, 1) : 0;
@@ -1755,6 +1905,7 @@
 
     updateScoreboard() {
       $('#scoreP1').textContent = this.rule.scores[0]; $('#scoreP2').textContent = this.rule.scores[1];
+      $('#mobileScore').textContent = this.world.mode === 'practice' ? '自由练习' : `P${this.rule.currentPlayer + 1} 击球 · ${this.rule.scores[0]} : ${this.rule.scores[1]}`;
       $$('.scoreboard .player').forEach((element, index) => element.classList.toggle('active', index === this.rule.currentPlayer));
       $('#shotLabel').textContent = `第 ${this.shotNumber} 杆`;
       let hint = '瞄准线显示考虑当前杆法后的模拟轨迹';

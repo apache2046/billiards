@@ -5,6 +5,7 @@
   "description": "Offline WebGL billiards physics lab",
   "scripts": {
     "serve": "node tools/serve.js",
-    "test": "node tests/physics-smoke.js"
+    "test": "node tests/physics-smoke.js && node tests/physics-advanced.js && node tests/pocket-regression.js && node tests/chinese-pocket-geometry.js",
+    "test:browser": "node tests/browser-smoke.js"
   }
 }

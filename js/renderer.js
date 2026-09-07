@@ -36,6 +36,9 @@
     uniform vec2 uTableHalfSize;
     uniform int uMaterial;
     uniform float uOpacity;
+    uniform bool uCutPockets;
+    uniform vec4 uPockets[6];
+    uniform vec2 uPocketAxes[6];
     out vec4 outColor;
 
     float hash(vec2 p) {
@@ -45,6 +48,15 @@
     }
 
     void main() {
+      if (uCutPockets && vWorldPosition.y > -0.225
+          && (abs(vWorldPosition.x) > uTableHalfSize.x - 0.15 || abs(vWorldPosition.z) > uTableHalfSize.y - 0.15)) {
+        for (int i = 0; i < 6; i++) {
+          vec2 delta = vWorldPosition.xz - uPockets[i].xy;
+          vec2 axis = uPocketAxes[i];
+          vec2 q = vec2(dot(delta, axis), dot(delta, vec2(-axis.y, axis.x))) / uPockets[i].zw;
+          if (dot(q, q) < 1.0) discard;
+        }
+      }
       vec3 texel = uTextureMode > 0 ? texture(uTexture, vUV * uTextureScale).rgb : vec3(1.0);
       vec3 base = uTextureMode == 1 ? texel : uColor;
       if (uTextureMode == 2) {
@@ -99,7 +111,10 @@
         base *= 1.0 + fibre;
         float edgeDistance = min(uTableHalfSize.x - abs(vWorldPosition.x), uTableHalfSize.y - abs(vWorldPosition.z));
         float railOcclusion = smoothstep(-0.008, 0.105, edgeDistance);
-        base *= mix(0.76, 1.0, railOcclusion);
+        // The rail shadows the bed, not its own raised cloth surface.
+        float bedHeight = 1.0 - smoothstep(0.002, 0.016, vWorldPosition.y);
+        base *= mix(1.0, mix(0.76, 1.0, railOcclusion), bedHeight);
+        hemisphere += 0.075 * (1.0 - bedHeight) * (1.0 - abs(n.y));
         // The light boxes pool their light toward the centre of the cloth.
         vec2 q = vWorldPosition.xz / uTableHalfSize;
         base *= 1.0 - 0.13 * smoothstep(0.42, 1.4, length(q));
@@ -112,6 +127,11 @@
         specular += pow(max(dot(n, normalize(overheadDir + viewDir)), 0.0), 54.0) * 0.09;
       } else if (uMaterial == 3) {
         outColor = vec4(base, uOpacity);
+        return;
+      } else if (uMaterial == 8) {
+        vec2 q = (vUV - 0.5) * 2.0;
+        float softness = pow(max(0.0, 1.0 - dot(q, q)), 1.6);
+        outColor = vec4(base, uOpacity * softness);
         return;
       } else if (uMaterial == 4) {
         diffuse *= 0.60;
@@ -131,12 +151,21 @@
         base *= 1.0 + lacquer;
         specular = pow(max(dot(n, normalize(overheadDir + viewDir)), 0.0), 64.0) * 0.34;
         specular += pow(max(dot(n, normalize(lightDir + viewDir)), 0.0), 26.0) * 0.10;
+      } else if (uMaterial == 7) {
+        // Soft room illumination, with a fine woven floor instead of a flat
+        // black void. The cloth remains the brightest large surface.
+        float pool = exp(-dot(vWorldPosition.xz * vec2(0.35, 0.6), vWorldPosition.xz * vec2(0.35, 0.6)));
+        base *= 0.65 + 0.55 * pool;
+        hemisphere += 0.15;
       }
       vec3 lit = base * (hemisphere + diffuse) + vec3(specular) + base * rim;
       float vignette = 1.0 - clamp(length(vWorldPosition.xz) * 0.008, 0.0, 0.08);
       // A gentle highlight shoulder keeps the overhead fixtures and gold trim
       // bright without hard RGB clipping.
       lit = lit / (vec3(1.0) + max(lit - vec3(0.82), vec3(0.0)) * 0.42);
+      // A falling ball loses the overhead light as the boot occludes it.
+      // Keep its radius and opacity intact, including from a top-down view.
+      if (uMaterial == 0) lit *= exp(min(vWorldPosition.y, 0.0) * 22.0);
       outColor = vec4(lit * vignette, uOpacity);
     }
   `;
@@ -303,6 +332,220 @@
     return { positions, normals, uvs, indices };
   }
 
+  // A convex cross-section swept along X. Real sloped cushion noses and
+  // chamfered rail caps catch a fine highlight without stacks of box faces.
+  function prismGeometry(profile) {
+    const positions = [], normals = [], uvs = [], indices = [];
+    const face = (vertices, normal) => {
+      const offset = positions.length / 3;
+      vertices.forEach((v, i) => { positions.push(...v); normals.push(...normal); uvs.push(i > 1 ? 1 : 0, i % 3 ? 1 : 0); });
+      for (let i = 1; i < vertices.length - 1; i += 1) indices.push(offset, offset + i, offset + i + 1);
+    };
+    // Profile is counterclockwise in the (depth, height) plane.
+    for (let i = 0; i < profile.length; i += 1) {
+      const [z0, y0] = profile[i], [z1, y1] = profile[(i + 1) % profile.length];
+      const length = Math.hypot(y1 - y0, z1 - z0);
+      face([[-1, y0, z0], [1, y0, z0], [1, y1, z1], [-1, y1, z1]], [0, -(z1 - z0) / length, (y1 - y0) / length]);
+    }
+    face(profile.map(([z, y]) => [-1, y, z]), [-1, 0, 0]);
+    face([...profile].reverse().map(([z, y]) => [1, y, z]), [1, 0, 0]);
+    return { positions, normals, uvs, indices };
+  }
+
+  // Inward-facing, open tube: unlike a capped cylinder it actually lets a
+  // full-size ball disappear below the slate. +X is the pocket's back.
+  function pocketLinerGeometry(segments = 64, sweep = Math.PI * 2, bottomRadius = 0.88) {
+    const positions = [], normals = [], uvs = [], indices = [];
+    for (let i = 0; i <= segments; i += 1) {
+      const angle = -sweep / 2 + i / segments * sweep;
+      const x = Math.cos(angle), z = Math.sin(angle);
+      positions.push(x, 0, z, x * bottomRadius, -1, z * bottomRadius);
+      const length = Math.hypot(1, 1 - bottomRadius);
+      normals.push(-x / length, (1 - bottomRadius) / length, -z / length, -x / length, (1 - bottomRadius) / length, -z / length);
+      uvs.push(i / segments * 4, 0, i / segments * 4, 1);
+      if (i < segments) {
+        const a = i * 2;
+        indices.push(a, a + 1, a + 3, a, a + 3, a + 2);
+      }
+    }
+    return { positions, normals, uvs, indices };
+  }
+
+  function jawGeometry(radius, top, contactHeight, segments = 48) {
+    const positions = [], normals = [], uvs = [], indices = [];
+    const profile = [[radius - 0.008, 0], [radius - 0.006, 0.015], [radius, contactHeight], [radius - 0.002, top - 0.002], [radius - 0.006, top], [0, top]];
+    for (let band = 0; band < profile.length - 1; band += 1) {
+      const [r0, y0] = profile[band], [r1, y1] = profile[band + 1];
+      const length = Math.hypot(r1 - r0, y1 - y0);
+      const offset = positions.length / 3;
+      for (let i = 0; i <= segments; i += 1) {
+        const a = i / segments * Math.PI * 2, x = Math.cos(a), z = Math.sin(a);
+        positions.push(x * r0, y0, z * r0, x * r1, y1, z * r1);
+        for (let j = 0; j < 2; j += 1) normals.push(x * (y1 - y0) / length, (r0 - r1) / length, z * (y1 - y0) / length);
+        uvs.push(i / segments, band / profile.length, i / segments, (band + 1) / profile.length);
+        if (i < segments) {
+          const base = offset + i * 2;
+          indices.push(base, base + 1, base + 3, base, base + 3, base + 2);
+        }
+      }
+    }
+    return { positions, normals, uvs, indices };
+  }
+
+  function emptyGeometry() {
+    return { positions: [], normals: [], uvs: [], indices: [] };
+  }
+
+  // A smooth indexed surface between matching curves. A separate call per
+  // cross-section band retains the fine crease at a cushion's rubber nose.
+  function appendSurface(mesh, rows, normalAt) {
+    const start = mesh.positions.length / 3, count = rows[0].length;
+    rows.forEach((row) => row.forEach((p) => {
+      mesh.positions.push(...p); mesh.normals.push(0, 0, 0); mesh.uvs.push(p[0], p[2]);
+    }));
+    const triangle = (a, b, c, hint) => {
+      const p = mesh.positions;
+      const u = [0, 1, 2].map((d) => p[b * 3 + d] - p[a * 3 + d]);
+      const v = [0, 1, 2].map((d) => p[c * 3 + d] - p[a * 3 + d]);
+      let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+      if (Math.hypot(...n) < 1e-14) return;
+      if (n.reduce((sum, value, d) => sum + value * hint[d], 0) < 0) {
+        [b, c] = [c, b]; n = n.map((value) => -value);
+      }
+      mesh.indices.push(a, b, c);
+      [a, b, c].forEach((index) => n.forEach((value, d) => { mesh.normals[index * 3 + d] += value; }));
+    };
+    for (let i = 0; i < rows.length - 1; i += 1) {
+      for (let j = 0; j < count - 1; j += 1) {
+        const a = start + i * count + j, b = a + count, hint = normalAt(j, i);
+        triangle(a, b, b + 1, hint); triangle(a, b + 1, a + 1, hint);
+      }
+    }
+    for (let i = start; i < mesh.positions.length / 3; i += 1) {
+      const length = Math.hypot(...mesh.normals.slice(i * 3, i * 3 + 3));
+      for (let d = 0; d < 3; d += 1) mesh.normals[i * 3 + d] /= length || 1;
+    }
+  }
+
+  function chineseCushionGeometry(table, segment) {
+    const mesh = emptyGeometry(), back = table.cushionBackDepth;
+    const top = table.cushionTopHeight, nose = table.cushionContactHeight;
+    const ridgeInset = 0.0035, rise = 0.014;
+    const height = (depth) => top + rise * (depth - ridgeInset) / (back - ridgeInset);
+    const levels = [[0.009, -0.002], [0.006, 0.018], [0, nose], [ridgeInset, null]];
+    const contours = levels.map(([inset]) => global.BilliardsPhysics.roundedCushionContour(table, segment, inset));
+    const rows = contours.map((path, i) => path.map((p) => [p.x, levels[i][1] ?? height(p.depth), p.z]));
+    for (let i = 0; i < rows.length - 1; i += 1) {
+      appendSurface(mesh, [rows[i], rows[i + 1]], (j) => [contours[i][j].nx, 0, contours[i][j].nz]);
+    }
+    const cap = (row, y, upward) => {
+      const mid = (segment.min + segment.max) / 2, depth = back * 0.65;
+      const centre = [
+        (segment.axis === 'x' ? mid : segment.value) - segment.normal.x * depth,
+        y ?? height(depth),
+        (segment.axis === 'x' ? segment.value : mid) - segment.normal.z * depth,
+      ];
+      const boundary = [...row, row[0]];
+      appendSurface(mesh, [boundary, boundary.map(() => centre)], () => [0, upward ? 1 : -1, 0]);
+    };
+    cap(rows[0], -0.002, false);
+    cap(rows.at(-1), null, true);
+    appendSurface(mesh, rows.map((row) => [row[0], row.at(-1)]), () => [-segment.normal.x, 0, -segment.normal.z]);
+    return mesh;
+  }
+
+  // Reference-shaped Chinese pocket irons. Straight wood caps terminate at
+  // these brackets; the cloth returns sit inside a broad, open U, rather than
+  // meeting a little circular ring cut into an uninterrupted wooden corner.
+  function chinesePocketGeometry(table, pocket, steps = 64) {
+    const plate = emptyGeometry(), facing = emptyGeometry(), clothReturns = emptyGeometry();
+    const railTop = table.cushionTopHeight + 0.017, rail = table.railWidth;
+    const inner = 0.056, corner = pocket.type === 'corner';
+    const joint = -table.cornerGap + global.BilliardsPhysics.cushionEndExtension(table, false, inner, 0.0035);
+    const sideJoint = table.sideMouth * 0.68;
+    const axis = pocket.outward, perpendicular = { x: -axis.z, z: axis.x };
+    const centre = { x: pocket.x, z: pocket.z };
+    const cornerCentre = { x: Math.sign(axis.x) * table.width / 2, z: Math.sign(axis.z) * table.height / 2 };
+    const pc = corner ? (pocket.x - cornerCentre.x) * Math.sign(axis.x) : pocket.z * Math.sign(axis.z) - table.height / 2;
+    const endpointAlong = corner ? (joint + inner - 2 * pc) * Math.SQRT1_2 : inner - pc;
+    const endpointAcross = corner ? (inner - joint) * Math.SQRT1_2
+      : table.sideGap - global.BilliardsPhysics.cushionEndExtension(table, true, inner, 0.0035);
+    const a = pocket.radiusAlong + (corner ? 0.007 : 0.001);
+    const angle = Math.acos(clamp(endpointAlong / a, -0.99, 0.99));
+    const b = endpointAcross / Math.sin(angle);
+    const innerPoints = [], outerPoints = [], bottomPoints = [];
+    for (let i = 0; i <= steps; i += 1) {
+      const t = i / steps, theta = -angle + 2 * angle * t;
+      const c = Math.cos(theta), s = Math.sin(theta);
+      innerPoints.push([centre.x + axis.x * a * c + perpendicular.x * b * s, railTop, centre.z + axis.z * a * c + perpendicular.z * b * s]);
+      bottomPoints.push([centre.x + axis.x * pocket.radiusAlong * c + perpendicular.x * pocket.radiusAcross * s, -0.004, centre.z + axis.z * pocket.radiusAlong * c + perpendicular.z * pocket.radiusAcross * s]);
+      let x, z;
+      if (corner) {
+        // Quarter-round outside corner with straight ends that exactly butt
+        // against the two wooden cap sections.
+        const radius = 0.082, arcCentre = rail - radius;
+        const straight = arcCentre - joint, arc = radius * Math.PI / 2, length = 2 * straight + arc;
+        const distance = t * length;
+        if (distance < straight) { x = rail; z = joint + distance; }
+        else if (distance <= straight + arc) {
+          const turn = (distance - straight) / radius;
+          x = arcCentre + radius * Math.cos(turn); z = arcCentre + radius * Math.sin(turn);
+        } else { x = arcCentre - (distance - straight - arc); z = rail; }
+        // The local curve runs right-hand joint → rear → left-hand joint.
+        // Reflection is determined by the pocket basis, not triangle winding.
+        const along = (x + z - 2 * pc) * Math.SQRT1_2, across = (z - x) * Math.SQRT1_2;
+        outerPoints.push([centre.x + axis.x * along + perpendicular.x * across, railTop, centre.z + axis.z * along + perpendicular.z * across]);
+      } else {
+        const radius = 0.014, straight = rail - inner - radius;
+        const cross = 2 * (sideJoint - radius), arc = radius * Math.PI / 2;
+        let distance = t * (2 * straight + 2 * arc + cross);
+        if (distance < straight) { x = -sideJoint; z = inner + distance; }
+        else if ((distance -= straight) < arc) {
+          const turn = distance / radius;
+          x = -sideJoint + radius - radius * Math.cos(turn); z = rail - radius + radius * Math.sin(turn);
+        } else if ((distance -= arc) < cross) { x = -sideJoint + radius + distance; z = rail; }
+        else if ((distance -= cross) < arc) {
+          const turn = distance / radius;
+          x = sideJoint - radius + radius * Math.sin(turn); z = rail - radius + radius * Math.cos(turn);
+        } else { distance -= arc; x = sideJoint; z = rail - radius - distance; }
+        outerPoints.push([centre.x + perpendicular.x * x + axis.x * (z - pc), railTop, centre.z + perpendicular.z * x + axis.z * (z - pc)]);
+      }
+    }
+    // Rolled outside edge, substantial skirt, and a dark leather funnel below
+    // the bracket. The slate aperture remains the solver's exact ellipse.
+    const bevel = outerPoints.map((p, i) => {
+      const dx = innerPoints[i][0] - p[0], dz = innerPoints[i][2] - p[2], length = Math.hypot(dx, dz);
+      return [p[0] + dx / length * 0.003, railTop, p[2] + dz / length * 0.003];
+    });
+    const shoulder = outerPoints.map((p) => [p[0], railTop - 0.004, p[2]]);
+    const bottom = outerPoints.map((p) => [p[0], -0.033, p[2]]);
+    appendSurface(plate, [innerPoints, bevel], () => [0, 1, 0]);
+    const outNormal = (j) => [outerPoints[j][0] - innerPoints[j][0], 0, outerPoints[j][2] - innerPoints[j][2]];
+    appendSurface(plate, [bevel, shoulder, bottom], outNormal);
+    appendSurface(facing, [innerPoints, bottomPoints], (j) => [centre.x - innerPoints[j][0], 0, centre.z - innerPoints[j][2]]);
+    // Close the two small cheeks where cloth folds from the cushion backing
+    // to the slate lip. Without them, an oblique view exposes the cabinet
+    // through a triangular seam between the cushion and the leather boot.
+    [0, steps].forEach((index) => {
+      const target = innerPoints[index], lip = bottomPoints[index];
+      let closest = null;
+      table.cushions.forEach((segment) => {
+        const path = global.BilliardsPhysics.roundedCushionContour(table, segment, 0.0035);
+        [0, path.length - 1].forEach((end) => {
+          const p = path[end], distance = Math.hypot(p.x - target[0], p.z - target[2]);
+          if (!closest || distance < closest.distance) closest = { segment, end, distance };
+        });
+      });
+      const rows = [[0.009, -0.002], [0.006, 0.018], [0, table.cushionContactHeight], [0.0035, table.cushionTopHeight + 0.014]].map(([inset, y]) => {
+        const p = global.BilliardsPhysics.roundedCushionContour(table, closest.segment, inset)[closest.end];
+        const t = (y - lip[1]) / (target[1] - lip[1]);
+        return [[p.x, y, p.z], [lip[0] + (target[0] - lip[0]) * t, y, lip[2] + (target[2] - lip[2]) * t]];
+      });
+      appendSurface(clothReturns, rows, () => [centre.x - target[0], 0, centre.z - target[2]]);
+    });
+    return { plate, facing, clothReturns };
+  }
+
   function pixelNoise(x, y, seed) {
     let value = Math.imul(x + seed * 17, 374761393) + Math.imul(y + seed * 31, 668265263);
     value = Math.imul(value ^ (value >>> 13), 1274126177);
@@ -385,7 +628,7 @@
       this.program = createProgram(gl, VERTEX_SHADER, FRAGMENT_SHADER);
       gl.useProgram(this.program);
       this.uniforms = {};
-      ['uModel', 'uNormalMatrix', 'uViewProjection', 'uColor', 'uCameraPosition', 'uTexture', 'uTextureMode', 'uTextureScale', 'uTableHalfSize', 'uMaterial', 'uOpacity'].forEach((name) => {
+      ['uModel', 'uNormalMatrix', 'uViewProjection', 'uColor', 'uCameraPosition', 'uTexture', 'uTextureMode', 'uTextureScale', 'uTableHalfSize', 'uMaterial', 'uOpacity', 'uCutPockets', 'uPockets[0]', 'uPocketAxes[0]'].forEach((name) => {
         this.uniforms[name] = gl.getUniformLocation(this.program, name);
       });
       this.normalMatrixScratch = new Float32Array(9);
@@ -397,13 +640,15 @@
         cueShaft: createMesh(gl, cylinderGeometry(24, 1, 1.95)),
         cueButt: createMesh(gl, cylinderGeometry(20, 1, 1.42)),
         leg: createMesh(gl, cylinderGeometry(22, 1, 0.80)),
-        cornerHole: createMesh(gl, sectorGeometry(40, Math.PI * 1.48)),
-        sideHole: createMesh(gl, sectorGeometry(32, Math.PI * 1.06)),
-        cornerPlate: createMesh(gl, sectorGeometry(40, Math.PI * 1.48, 0.74)),
-        sidePlate: createMesh(gl, sectorGeometry(32, Math.PI * 1.06, 0.74)),
+        pocketLiner: createMesh(gl, pocketLinerGeometry()),
+        pocketBack: createMesh(gl, pocketLinerGeometry(40, Math.PI, 1)),
+        pocketCollar: createMesh(gl, sectorGeometry(40, Math.PI, 1 / 1.16)),
+        pocketTrim: createMesh(gl, sectorGeometry(40, Math.PI, 0.975)),
+        slateLip: createMesh(gl, pocketLinerGeometry(64, Math.PI * 2, 1.06)),
         arcLine: createMesh(gl, sectorGeometry(48, Math.PI, 0.9925)),
       };
       this.textures = new Map();
+      this.tableMeshes = new Map();
       this.anisotropy = gl.getExtension('EXT_texture_filter_anisotropic')
         || gl.getExtension('MOZ_EXT_texture_filter_anisotropic')
         || gl.getExtension('WEBKIT_EXT_texture_filter_anisotropic');
@@ -415,7 +660,7 @@
       // Software WebGL is a compatibility path. Rendering it below native CSS
       // resolution preserves the full physics/material model while avoiding a
       // needlessly sluggish fallback; hardware WebGL remains full resolution.
-      this.resolutionScale = this.softwareRenderer ? 0.65 : 1;
+      this.resolutionScale = this.softwareRenderer ? 0.8 : 1;
       this.cameraMode = 'perspective';
       this.zoom = 1;
       this.orbit = null; // { yaw, pitch } once the user grabs the view; null = auto framing
@@ -426,19 +671,47 @@
       this.cssHeight = 1;
       this.devicePixelRatio = 1;
       this.ballStyle = 'tv';
+      this.tableTheme = 'club';
       gl.enable(gl.DEPTH_TEST);
       gl.depthFunc(gl.LEQUAL);
       gl.enable(gl.CULL_FACE);
       gl.cullFace(gl.BACK);
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-      gl.clearColor(0.025, 0.065, 0.052, 1);
+      gl.clearColor(0.055, 0.071, 0.075, 1);
     }
 
     setTable(table) {
       this.table = table;
+      this.prepareTableMeshes(table);
       this.zoom = 1;
       this.updateCamera();
+    }
+
+    prepareTableMeshes(table) {
+      const key = table.style;
+      if (!this.tableMeshes.has(key)) {
+        const top = table.cushionTopHeight, nose = table.cushionContactHeight;
+        const railTop = top + 0.017, inner = 0.056, outer = table.railWidth;
+        this.tableMeshes.set(key, {
+          cushionProfile: createMesh(this.gl, prismGeometry([[0.009, 0], [0.060, 0], [0.060, top], [0.006, top], [0, nose]])),
+          railProfile: createMesh(this.gl, prismGeometry([[inner + 0.003, -0.036], [outer - 0.003, -0.036], [outer, -0.033], [outer, railTop - 0.004], [outer - 0.004, railTop], [inner + 0.004, railTop], [inner, railTop - 0.004], [inner, -0.033]])),
+          jawProfile: createMesh(this.gl, jawGeometry(table.jawRadius, top, nose)),
+        });
+        if (table.style === 'chinese') {
+          const meshes = this.tableMeshes.get(key);
+          table.cushions.forEach((segment) => {
+            meshes[`cloth-${segment.id}`] = createMesh(this.gl, chineseCushionGeometry(table, segment));
+          });
+          table.pockets.forEach((pocket) => {
+            const geometry = chinesePocketGeometry(table, pocket);
+            meshes[`iron-${pocket.id}`] = createMesh(this.gl, geometry.plate);
+            meshes[`facing-${pocket.id}`] = createMesh(this.gl, geometry.facing);
+            meshes[`cheeks-${pocket.id}`] = createMesh(this.gl, geometry.clothReturns);
+          });
+        }
+      }
+      Object.assign(this.meshes, this.tableMeshes.get(key));
     }
 
     toggleCamera() {
@@ -458,7 +731,7 @@
       if (this.cameraMode !== 'perspective' || !this.table) return false;
       if (!this.orbit) {
         const tableScale = this.table.width;
-        const target = { x: 0, y: -0.02, z: tableScale * 0.075 };
+        const target = { x: 0, y: -0.04, z: tableScale * 0.035 };
         const off = {
           x: this.cameraPosition.x - target.x,
           y: this.cameraPosition.y - target.y,
@@ -515,12 +788,12 @@
         const tableScale = this.table.width;
         // Wider stages sit closer to the broadcast angle; narrow ones back off
         // so the full table always fits.
-        const fit = clamp(2.55 / Math.max(aspect, 0.8), 1, 1.9);
-        const target = { x: 0, y: -0.02, z: tableScale * 0.075 };
+        const fit = clamp(2.15 / Math.max(aspect, 0.5), 1, 4.4);
+        const target = { x: 0, y: -0.04, z: tableScale * 0.035 };
         const base = {
           x: -tableScale * 0.02 - target.x,
-          y: tableScale * 0.70 * fit * this.zoom - target.y,
-          z: tableScale * 0.83 * fit * this.zoom - target.z,
+          y: tableScale * 0.82 * fit * this.zoom - target.y,
+          z: tableScale * 0.72 * fit * this.zoom - target.z,
         };
         const distance = Math.hypot(base.x, base.y, base.z);
         let direction;
@@ -543,7 +816,17 @@
 
     render(world, options = {}) {
       this.resize();
-      if (this.table !== world.table) { this.table = world.table; this.updateCamera(); }
+      if (this.table !== world.table) { this.table = world.table; this.prepareTableMeshes(world.table); this.updateCamera(); }
+      // Retain the last WebGL frame while aiming/settings are unchanged.
+      // This matters on software renderers and keeps an idle table quiet on
+      // laptop batteries; every moving-ball pose still gets a fresh frame.
+      const signature = [this.canvas.width, this.canvas.height, world.mode, this.tableTheme, this.ballStyle,
+        this.cameraMode, this.zoom, this.orbit?.yaw, this.orbit?.pitch,
+        options.showCue, options.aimDirection?.x, options.aimDirection?.z, options.elevation, options.pullback, options.tipX, options.tipY,
+        ...world.balls.flatMap((b) => [b.id, b.color, b.pos.x, b.posY, b.pos.z, b.pocketed, b.sinkDepth, ...b.rotation]),
+      ].join('|');
+      if (signature === this.lastRenderSignature) return;
+      this.lastRenderSignature = signature;
       const gl = this.gl;
       gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
       gl.useProgram(this.program);
@@ -551,10 +834,14 @@
       gl.uniform3f(this.uniforms.uCameraPosition, this.cameraPosition.x, this.cameraPosition.y, this.cameraPosition.z);
       gl.uniform1i(this.uniforms.uTexture, 0);
       gl.uniform2f(this.uniforms.uTableHalfSize, world.table.width / 2, world.table.height / 2);
+      gl.uniform4fv(this.uniforms['uPockets[0]'], world.table.pockets.flatMap((p) => [p.x, p.z, p.radiusAlong, p.radiusAcross]));
+      gl.uniform2fv(this.uniforms['uPocketAxes[0]'], world.table.pockets.flatMap((p) => [p.outward.x, p.outward.z]));
 
+      gl.uniform1i(this.uniforms.uCutPockets, 1);
       this.drawEnvironment(world);
       this.drawTable(world);
       this.drawShadows(world);
+      gl.uniform1i(this.uniforms.uCutPockets, 0);
       this.drawBalls(world);
       if (options.showCue) {
         this.drawCue(world, options.aimDirection, options.elevation || 0, options.pullback || 0, options.tipX || 0, options.tipY || 0);
@@ -572,10 +859,9 @@
       const apron = chinese ? '#241610' : world.mode === 'snooker' ? '#1d120b' : '#20130c';
       const gold = '#a8834b';
 
-      this.draw('cube', Mat4.translationScale({ x: 0, y: floorY - 0.02, z: 0 }, { x: W * 1.85, y: 0.02, z: W * 1.05 }), '#101214', 4, 1, carpetTexture, 2, { x: 16, y: 10 });
+      this.draw('cube', Mat4.translationScale({ x: 0, y: floorY - 0.02, z: 0 }, { x: W * 4, y: 0.02, z: W * 4 }), '#20282b', 7, 1, carpetTexture, 2, { x: 32, y: 32 });
       this.gl.depthMask(false);
-      this.draw('circle', Mat4.translationScale({ x: 0, y: floorY + 0.004, z: 0 }, { x: W * 0.80, y: 1, z: H * 1.10 }), '#000000', 3, 0.26);
-      this.draw('circle', Mat4.translationScale({ x: 0, y: floorY + 0.0048, z: 0 }, { x: W * 0.58, y: 1, z: H * 0.78 }), '#000000', 3, 0.26);
+      this.draw('circle', Mat4.translationScale({ x: 0, y: floorY + 0.004, z: 0 }, { x: W * 0.82, y: 1, z: H * 1.4 }), '#000000', 8, 0.60);
       this.gl.depthMask(true);
 
       // Cabinet body below the rails, then a stepped-in lower chassis.
@@ -583,10 +869,10 @@
       this.draw('cube', Mat4.translationScale({ x: 0, y: -0.30, z: 0 }, { x: W / 2 + rail * 0.28, y: 0.115, z: H / 2 + rail * 0.28 }), '#170e08', 2, 1, woodTexture, 2, { x: 6, y: 1.6 });
       if (chinese) {
         const trimX = W / 2 + rail * 0.82, trimZ = H / 2 + rail * 0.82;
-        this.draw('cube', Mat4.translationScale({ x: 0, y: -0.041, z: trimZ }, { x: trimX + 0.004, y: 0.0048, z: 0.0042 }), gold, 5, 1, metalTexture, 2, { x: 9, y: 1 });
-        this.draw('cube', Mat4.translationScale({ x: 0, y: -0.041, z: -trimZ }, { x: trimX + 0.004, y: 0.0048, z: 0.0042 }), gold, 5, 1, metalTexture, 2, { x: 9, y: 1 });
-        this.draw('cube', Mat4.translationScale({ x: trimX, y: -0.041, z: 0 }, { x: 0.0042, y: 0.0048, z: trimZ + 0.004 }), gold, 5, 1, metalTexture, 2, { x: 2, y: 7 });
-        this.draw('cube', Mat4.translationScale({ x: -trimX, y: -0.041, z: 0 }, { x: 0.0042, y: 0.0048, z: trimZ + 0.004 }), gold, 5, 1, metalTexture, 2, { x: 2, y: 7 });
+        this.draw('cube', Mat4.translationScale({ x: 0, y: -0.041, z: trimZ }, { x: W / 2 + 0.060, y: 0.0048, z: 0.0042 }), gold, 5, 1, metalTexture, 2, { x: 9, y: 1 });
+        this.draw('cube', Mat4.translationScale({ x: 0, y: -0.041, z: -trimZ }, { x: W / 2 + 0.060, y: 0.0048, z: 0.0042 }), gold, 5, 1, metalTexture, 2, { x: 9, y: 1 });
+        this.draw('cube', Mat4.translationScale({ x: trimX, y: -0.041, z: 0 }, { x: 0.0042, y: 0.0048, z: H / 2 + 0.060 }), gold, 5, 1, metalTexture, 2, { x: 2, y: 7 });
+        this.draw('cube', Mat4.translationScale({ x: -trimX, y: -0.041, z: 0 }, { x: 0.0042, y: 0.0048, z: H / 2 + 0.060 }), gold, 5, 1, metalTexture, 2, { x: 2, y: 7 });
       }
 
       // The Joy signature: tapered golden legs near the corners.
@@ -604,21 +890,25 @@
       const W = t.width, H = t.height, rail = t.railWidth;
       const chinese = t.style === 'chinese';
       const snooker = world.mode === 'snooker';
-      const wood = snooker ? '#452a18' : chinese ? '#5a3a21' : '#4f2e1b';
-      const cloth = snooker ? '#1d7f4c' : chinese ? '#177a4e' : '#12775a';
-      const cushion = snooker ? '#186f42' : chinese ? '#136b45' : '#0e684d';
-      const plateColor = snooker ? '#2b1d13' : chinese ? '#9c7d49' : '#231910';
+      const palette = {
+        club: { wood: '#513b2b', cloth: '#238960', cushion: '#1d7753' },
+        blue: { wood: '#3b3630', cloth: '#328ca0', cushion: '#287788' },
+        classic: { wood: '#654631', cloth: '#348448', cushion: '#2a733d' },
+      }[this.tableTheme] || { wood: '#513b2b', cloth: '#238960', cushion: '#1d7753' };
+      const { wood, cloth, cushion } = palette;
       const cushionTop = t.cushionTopHeight || 0.042;
       const railTop = cushionTop + 0.017;
-      const railBottom = -0.036;
       const woodInner = 0.056;
       const clothTexture = this.getMaterialTexture('cloth');
       const woodTexture = this.getMaterialTexture('wood');
       const rubberTexture = this.getMaterialTexture('rubber');
       const metalTexture = this.getMaterialTexture('metal');
 
-      // Cloth bed extends slightly under the cushions so no seams show.
-      this.draw('cube', Mat4.translationScale({ x: 0, y: -0.023, z: 0 }, { x: W / 2 + 0.045, y: 0.023, z: H / 2 + 0.045 }), cloth, 1, 1, clothTexture, 2, { x: 9, y: 4.5 });
+      // Slate/cloth continues under the mouth returns and pocket irons. A
+      // bed ending at the cushion backing leaves see-through shelf wedges
+      // in oblique views of the larger, flared opening above the slate cut.
+      const clothOverlap = chinese ? rail * 0.75 : 0.045;
+      this.draw('cube', Mat4.translationScale({ x: 0, y: -0.023, z: 0 }, { x: W / 2 + clothOverlap, y: 0.023, z: H / 2 + clothOverlap }), cloth, 1, 1, clothTexture, 2, { x: 9, y: 4.5 });
 
       // Cloth markings: head string + foot spot, or snooker baulk line, D and spots.
       if (snooker) {
@@ -635,24 +925,23 @@
 
       // Cushion profile: a recessed base with an overhanging nose whose face
       // sits exactly on the physics contact line, so rebounds match the visual.
+      this.gl.uniform1i(this.uniforms.uCutPockets, 0);
       t.cushions.forEach((segment) => {
+        if (chinese) {
+          this.draw(`cloth-${segment.id}`, Mat4.identity(), cushion, 1, 1, clothTexture, 2, { x: 6, y: 6 });
+          return;
+        }
         const length = (segment.max - segment.min) / 2;
         const mid = (segment.min + segment.max) / 2;
-        const noseY = (cushionTop + 0.019) / 2, noseHalf = (cushionTop - 0.019) / 2;
-        const at = (offset, y, halfY, halfDepth) => (segment.axis === 'x'
-          ? [{ x: mid, y, z: segment.value - segment.normal.z * offset }, { x: length, y: halfY, z: halfDepth }]
-          : [{ x: segment.value - segment.normal.x * offset, y, z: mid }, { x: halfDepth, y: halfY, z: length }]);
-        const texScale = segment.axis === 'x' ? { x: 6, y: 1 } : { x: 1, y: 6 };
-        const [nosePos, noseScale] = at(0.030, noseY, noseHalf, 0.030);
-        const [basePos, baseScale] = at(0.034, 0.0115, 0.0115, 0.028);
-        this.draw('cube', Mat4.translationScale(nosePos, noseScale), cushion, 1, 1, clothTexture, 2, texScale);
-        this.draw('cube', Mat4.translationScale(basePos, baseScale), cushion, 1, 1, clothTexture, 2, texScale);
+        const position = segment.axis === 'x' ? { x: mid, y: 0, z: segment.value } : { x: segment.value, y: 0, z: mid };
+        const direction = { x: -segment.normal.z, z: segment.normal.x };
+        this.draw('cushionProfile', Mat4.fromTRS(position, yawQuat(direction), { x: length, y: 1, z: 1 }), cushion, 1, 1, clothTexture, 2, { x: 6, y: 1 });
       });
 
-      t.jaws.forEach((jaw) => {
-        this.draw('cylinder', Mat4.translationScale(
-          { x: jaw.x, y: cushionTop / 2, z: jaw.z },
-          { x: jaw.radius, y: cushionTop / 2, z: jaw.radius },
+      if (!chinese) t.jaws.forEach((jaw) => {
+        this.draw('jawProfile', Mat4.translationScale(
+          { x: jaw.x, y: 0, z: jaw.z },
+          { x: 1, y: 1, z: 1 },
         ), cushion, 1, 1, clothTexture, 2, { x: 2, y: 2 });
       });
 
@@ -671,38 +960,49 @@
         this.draw('cube', Mat4.fromTRS(mid, yawQuat(direction), { x: length / 2, y: cushionTop / 2, z: half }), cushion, 1, 1, clothTexture, 2, { x: 1.5, y: 1 });
       });
 
-      // Rail caps: long caps run the full width and own the corners; the short
-      // caps butt against them so no coplanar top faces overlap.
-      const woodY = (railTop + railBottom) / 2, woodHalfY = (railTop - railBottom) / 2;
-      const woodMid = (woodInner + rail) / 2, woodHalf = (rail - woodInner) / 2;
-      [-1, 1].forEach((side) => {
-        this.draw('cube', Mat4.translationScale(
-          { x: 0, y: woodY, z: side * (H / 2 + woodMid) },
-          { x: W / 2 + rail, y: woodHalfY, z: woodHalf },
+      // Chinese rails are six separate wooden caps with real open ends at
+      // the pocket irons. Other table styles retain their original caps.
+      const woodMid = (woodInner + rail) / 2;
+      this.gl.uniform1i(this.uniforms.uCutPockets, chinese ? 0 : 1);
+      if (chinese) t.cushions.forEach((segment) => {
+        const extension = (end) => segment.axis === 'x' && Math.abs(Math.abs(end) - t.sideGap) < 1e-9
+          ? t.sideGap - t.sideMouth * 0.68 : global.BilliardsPhysics.cushionEndExtension(t, false, woodInner, 0.0035);
+        const min = segment.min - extension(segment.min), max = segment.max + extension(segment.max);
+        const mid = (min + max) / 2;
+        const position = segment.axis === 'x' ? { x: mid, y: 0, z: segment.value } : { x: segment.value, y: 0, z: mid };
+        this.draw('railProfile', Mat4.fromTRS(position, yawQuat({ x: -segment.normal.z, z: segment.normal.x }), { x: (max - min) / 2, y: 1, z: 1 }), wood, 2, 1, woodTexture, 2, { x: 6, y: 1 });
+      });
+      else [-1, 1].forEach((side) => {
+        this.draw('railProfile', Mat4.fromTRS(
+          { x: 0, y: 0, z: side * H / 2 }, yawQuat({ x: side, z: 0 }),
+          { x: W / 2 + rail, y: 1, z: 1 },
         ), wood, 2, 1, woodTexture, 2, { x: 9, y: 1 });
-        this.draw('cube', Mat4.translationScale(
-          { x: side * (W / 2 + woodMid), y: woodY, z: 0 },
-          { x: woodHalf, y: woodHalfY, z: H / 2 + woodInner },
+        this.draw('railProfile', Mat4.fromTRS(
+          { x: side * W / 2, y: 0, z: 0 }, yawQuat({ x: 0, z: -side }),
+          { x: H / 2 + woodInner, y: 1, z: 1 },
         ), wood, 2, 1, woodTexture, 2, { x: 1, y: 6 });
       });
 
-      // Pockets: a dark shaft below the slate, then a plate and open hole set
-      // into the rail caps.  Sectors face outward so nothing floats over cloth.
+      // Open slate cuts, a thin cloth-covered bevel and recessed leather
+      // boots. Only the rear half has a collar at rail height; the mouth is
+      // unobstructed and the exact same ellipse controls physical support.
+      this.gl.uniform1i(this.uniforms.uCutPockets, 0);
       t.pockets.forEach((pocket) => {
-        const corner = pocket.type === 'corner';
-        const holeR = t.pocketRadius * (corner ? 1.10 : 1.02);
-        const plateR = holeR * 1.32;
+        const a = pocket.radiusAlong, b = pocket.radiusAcross;
         const spin = yawQuat(pocket.outward);
-        this.draw('cylinder', Mat4.translationScale(
-          { x: pocket.x, y: -0.053, z: pocket.z },
-          { x: holeR * 0.98, y: 0.049, z: holeR * 0.98 },
-        ), '#070404', 4);
-        this.draw(corner ? 'cornerPlate' : 'sidePlate', Mat4.fromTRS(
-          { x: pocket.x, y: railTop + 0.0012, z: pocket.z }, spin, { x: plateR, y: 1, z: plateR },
-        ), plateColor, chinese ? 5 : 4, 1, chinese ? metalTexture : rubberTexture, 2, { x: 2, y: 2 });
-        this.draw(corner ? 'cornerHole' : 'sideHole', Mat4.fromTRS(
-          { x: pocket.x, y: railTop + 0.0022, z: pocket.z }, spin, { x: holeR, y: 1, z: holeR },
-        ), '#040302', 3, 0.985);
+        const model = (y, height, scale = 1) => Mat4.fromTRS({ x: pocket.x, y, z: pocket.z }, spin, { x: a * scale, y: height, z: b * scale });
+        this.draw('pocketLiner', model(-0.004, pocket.depth), '#141719', 4, 1, rubberTexture, 2);
+        this.draw('slateLip', model(0.0001, 0.005), cushion, 1, 1, clothTexture, 2);
+        this.draw('circle', model(-pocket.depth + 0.002, 1, 0.89), '#070a0a', 3);
+        if (chinese) {
+          this.draw(`facing-${pocket.id}`, Mat4.identity(), '#29251e', 4, 1, rubberTexture, 2, { x: 5, y: 5 });
+          this.draw(`cheeks-${pocket.id}`, Mat4.identity(), cushion, 1, 1, clothTexture, 2, { x: 6, y: 6 });
+          this.draw(`iron-${pocket.id}`, Mat4.identity(), '#a38b60', 5, 1, metalTexture, 2, { x: 4, y: 4 });
+        } else {
+          this.draw('pocketBack', model(railTop, railTop), '#24211d', 4, 1, rubberTexture, 2);
+          this.draw('pocketCollar', model(railTop + 0.0005, 1, 1.16), '#302920', 4, 1, rubberTexture, 2);
+          this.draw('pocketTrim', model(railTop + 0.0008, 1, 1.16), '#73604a', 5, 1, metalTexture, 2);
+        }
       });
 
       // Mother-of-pearl sights at every eighth (long) and quarter (short) point.
@@ -720,6 +1020,7 @@
           this.draw('circle', Mat4.translationScale({ x: side * (W / 2 + sightRail), y: railTop + 0.0008, z }, { x: 0.0062, y: 1, z: 0.0062 }), sightColor, 3, 0.82);
         });
       });
+      this.gl.uniform1i(this.uniforms.uCutPockets, 1);
     }
 
     drawShadows(world) {
@@ -732,22 +1033,20 @@
         const spread = 1 + lift * 3.2;
         fade *= Math.max(0.18, 1 - lift * 4.5);
         const radius = ball.radius;
-        this.draw('circle', Mat4.translationScale({ x: ball.pos.x + radius * 0.26, y: 0.0022, z: ball.pos.z - radius * 0.22 }, { x: radius * 1.52 * spread, y: 1, z: radius * 1.16 * spread }), '#000000', 3, 0.10 * fade);
-        this.draw('circle', Mat4.translationScale({ x: ball.pos.x + radius * 0.12, y: 0.0028, z: ball.pos.z - radius * 0.10 }, { x: radius * 1.05 * spread, y: 1, z: radius * 0.84 * spread }), '#000000', 3, 0.20 * fade);
-        this.draw('circle', Mat4.translationScale({ x: ball.pos.x + radius * 0.04, y: 0.0034, z: ball.pos.z - radius * 0.03 }, { x: radius * 0.64 * spread, y: 1, z: radius * 0.55 * spread }), '#000000', 3, 0.26 * fade);
+        this.draw('circle', Mat4.translationScale({ x: ball.pos.x + radius * 0.26, y: 0.0022, z: ball.pos.z - radius * 0.22 }, { x: radius * 1.8 * spread, y: 1, z: radius * 1.4 * spread }), '#000000', 8, 0.22 * fade);
+        this.draw('circle', Mat4.translationScale({ x: ball.pos.x + radius * 0.12, y: 0.0028, z: ball.pos.z - radius * 0.10 }, { x: radius * 1.2 * spread, y: 1, z: radius * 0.94 * spread }), '#000000', 8, 0.32 * fade);
+        this.draw('circle', Mat4.translationScale({ x: ball.pos.x + radius * 0.04, y: 0.0034, z: ball.pos.z - radius * 0.03 }, { x: radius * 0.72 * spread, y: 1, z: radius * 0.62 * spread }), '#000000', 8, 0.38 * fade);
       }
       this.gl.depthMask(true);
     }
 
     drawBalls(world) {
       for (const ball of world.balls) {
-        if (ball.pocketed && ball.sinkTime > 0.52) continue;
-        const sinkScale = ball.pocketed ? Math.max(0.12, 1 - ball.sinkTime * 1.25) : 1;
-        const r = ball.radius * sinkScale;
-        const position = { x: ball.pos.x, y: ball.radius + (ball.posY || 0) - ball.sinkDepth, z: ball.pos.z };
-        const model = Mat4.fromTRS(position, ball.rotation, r);
+        if (ball.pocketed && (!ball.sinkTarget || ball.sinkDepth >= 0.22)) continue;
+        const position = { x: ball.pos.x, y: ball.radius + (ball.posY || 0), z: ball.pos.z };
+        const model = Mat4.fromTRS(position, ball.rotation, ball.radius);
         const texture = this.getBallTexture(ball);
-        this.draw('sphere', model, ball.color, 0, ball.pocketed ? Math.max(0, 1 - ball.sinkTime * 1.7) : 1, texture);
+        this.draw('sphere', model, ball.color, 0, 1, texture);
       }
     }
 
@@ -1036,6 +1335,6 @@
 
   global.BilliardsRenderer = {
     BilliardsRenderer,
-    geometry: { cubeGeometry, sphereGeometry, circleGeometry, cylinderGeometry, sectorGeometry },
+    geometry: { cubeGeometry, sphereGeometry, circleGeometry, cylinderGeometry, sectorGeometry, prismGeometry, pocketLinerGeometry, jawGeometry, chineseCushionGeometry, chinesePocketGeometry },
   };
 })(window);

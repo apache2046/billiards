@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#081411">
+  <meta name="theme-color" content="#141b1c">
   <meta name="description" content="CueLab：完全离线运行的 WebGL 台球物理与走位训练实验室。">
   <title>CueLab · 台球物理实验室</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 64%22%3E%3Crect width=%2264%22 height=%2264%22 rx=%2214%22 fill=%22%23081411%22/%3E%3Ccircle cx=%2232%22 cy=%2232%22 r=%2218%22 fill=%22none%22 stroke=%22%2336ddae%22 stroke-width=%223%22/%3E%3Ccircle cx=%2232%22 cy=%2232%22 r=%226%22 fill=%22%23f3f6ef%22/%3E%3C/svg%3E">
@@ -39,6 +39,7 @@
       </div>
 
       <div class="top-actions">
+        <button class="outline-button focus-button" id="focusToggle" type="button" aria-pressed="false" title="专注球台 (F)"><span>专注球台</span><kbd>F</kbd></button>
         <button class="icon-button" id="soundToggle" type="button" title="声音" aria-label="切换声音">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4zm12.5 3a4.5 4.5 0 0 0-2.1-3.8v7.6a4.5 4.5 0 0 0 2.1-3.8z"/><path class="sound-wave" d="M17.6 4.7a9 9 0 0 1 0 14.6l1.4 1.5a11 11 0 0 0 0-17.6l-1.4 1.5z"/></svg>
         </button>
@@ -78,17 +79,17 @@
         </div>
 
         <div class="view-tools glass-panel" aria-label="视图工具">
-          <button id="guideToggle" class="tool-button active" type="button" title="预测轨迹 (G)">
+          <button id="guideToggle" class="tool-button active" type="button" title="预测轨迹 (G)" aria-label="预测轨迹" aria-pressed="true">
             <svg viewBox="0 0 24 24"><path d="M4 18.5h4.2a3 3 0 0 0 2.7-1.7l2.3-4.7a3 3 0 0 1 2.7-1.7H20M4 5.5h3M17 5.5h3"/><circle cx="4" cy="5.5" r="1.5"/><circle cx="20" cy="5.5" r="1.5"/></svg>
           </button>
-          <button id="diamondToggle" class="tool-button active" type="button" title="台面坐标与钻石点">
+          <button id="diamondToggle" class="tool-button" type="button" title="台面坐标与钻石点" aria-label="台面坐标" aria-pressed="false">
             <svg viewBox="0 0 24 24"><path d="M3 5h18v14H3zM8 5v14M16 5v14M3 10h18M3 15h18"/></svg>
           </button>
-          <button id="trailToggle" class="tool-button active" type="button" title="保留真实轨迹">
+          <button id="trailToggle" class="tool-button active" type="button" title="保留真实轨迹" aria-label="保留真实轨迹" aria-pressed="true">
             <svg viewBox="0 0 24 24"><path d="M4 18c3.2 0 3.5-12 8-12s4.8 12 8 12"/><circle cx="4" cy="18" r="1.5"/><circle cx="20" cy="18" r="1.5"/></svg>
           </button>
           <span class="tool-separator"></span>
-          <button id="cameraButton" class="tool-button" type="button" title="切换俯视 / 透视">
+          <button id="cameraButton" class="tool-button" type="button" title="切换俯视 / 透视" aria-label="俯视球台" aria-pressed="false">
             <svg viewBox="0 0 24 24"><path d="M4 7.5 12 3l8 4.5v9L12 21l-8-4.5v-9zM4 7.5l8 4.5 8-4.5M12 12v9"/></svg>
           </button>
         </div>
@@ -98,6 +99,7 @@
           <span><i class="line object-line"></i>目标球预测</span>
           <span><i class="ghost-dot"></i>假想球</span>
         </div>
+        <div class="mobile-score glass-panel" id="mobileScore" aria-label="当前回合与比分">P1 击球 · 0 : 0</div>
 
         <div class="key-hud glass-panel" id="keyHud" aria-label="键盘击球参数">
           <div class="key-ball" aria-hidden="true">
@@ -148,7 +150,13 @@
       </section>
 
       <aside class="control-panel" id="controlPanel">
+        <div class="panel-intro"><div><small>MAKE YOUR NEXT SHOT</small><h1>击球控制</h1></div><span class="panel-ball" aria-hidden="true">8</span></div>
+        <div class="panel-tabs" role="tablist" aria-label="控制面板">
+          <button id="shotTab" type="button" role="tab" aria-selected="true" aria-controls="shotPage" data-panel="shotPage">本杆设置</button>
+          <button id="labTab" type="button" role="tab" aria-selected="false" aria-controls="labPage" tabindex="-1" data-panel="labPage">球台与实验</button>
+        </div>
         <div class="panel-scroll">
+          <div id="shotPage" class="panel-page" role="tabpanel" aria-labelledby="shotTab">
           <section class="panel-section shot-section">
             <div class="section-heading">
               <div><span class="section-index">01</span><strong>击球设置</strong></div>
@@ -157,7 +165,7 @@
 
             <div class="spin-layout">
               <div class="spin-control-wrap">
-                <div class="spin-control" id="spinControl" role="application" aria-label="母球击点控制">
+                <div class="spin-control" id="spinControl" tabindex="0" role="group" aria-label="母球击点，方向键微调，Home 回中" aria-describedby="spinHint">
                   <div class="spin-cross x"></div>
                   <div class="spin-cross y"></div>
                   <div class="spin-ring ring-a"></div>
@@ -180,11 +188,12 @@
 
             <div class="presets" aria-label="常用杆法">
               <button type="button" data-spin="0,0.45">高杆</button>
-              <button type="button" data-spin="0,0">定杆</button>
+              <button type="button" data-spin="0,0">中杆</button>
               <button type="button" data-spin="0,-0.45">低杆</button>
               <button type="button" data-spin="-0.42,0">左塞</button>
               <button type="button" data-spin="0.42,0">右塞</button>
             </div>
+            <p id="spinHint" class="control-hint">点击母球选择打点；中心击球适合开始练习。</p>
           </section>
 
           <section class="panel-section">
@@ -206,10 +215,7 @@
               <small><span>平杆</span><span>跳杆 / 扎杆</span></small>
             </label>
 
-            <button id="shootButton" class="shoot-button" type="button">
-              <span class="shoot-icon"><i></i></span>
-              <span><strong>击球</strong><small>SPACE</small></span>
-            </button>
+            <p id="shotFeedback" class="shot-feedback" role="status">已准备好，瞄准后即可击球。</p>
           </section>
 
           <section class="panel-section assist-section">
@@ -220,11 +226,14 @@
             <div class="toggle-grid">
               <label class="switch-row"><span><i class="toggle-icon trajectory"></i>动态轨迹</span><input id="assistTrajectory" type="checkbox" checked><i class="switch"></i></label>
               <label class="switch-row"><span><i class="toggle-icon ghost"></i>假想球</span><input id="assistGhost" type="checkbox" checked><i class="switch"></i></label>
-              <label class="switch-row"><span><i class="toggle-icon tangent"></i>90° 分离线</span><input id="assistTangent" type="checkbox" checked><i class="switch"></i></label>
-              <label class="switch-row"><span><i class="toggle-icon pocket"></i>袋口走廊</span><input id="assistPocket" type="checkbox" checked><i class="switch"></i></label>
+              <label class="switch-row"><span><i class="toggle-icon tangent"></i>90° 分离线</span><input id="assistTangent" type="checkbox"><i class="switch"></i></label>
+              <label class="switch-row"><span><i class="toggle-icon pocket"></i>袋口走廊</span><input id="assistPocket" type="checkbox"><i class="switch"></i></label>
             </div>
           </section>
+          <div class="panel-tip"><span>上手很简单</span><p>移动指针瞄准，向后拖动蓄力，松开击球。也可以调好力度，点击底部「击球」。</p><button id="panelHelp" type="button" class="text-button">查看操作指南 ↗</button></div>
+          </div>
 
+          <div id="labPage" class="panel-page" role="tabpanel" aria-labelledby="labTab" hidden>
           <section class="panel-section physics-section">
             <div class="section-heading compact">
               <div><span class="section-index">04</span><strong>物理实验</strong></div>
@@ -232,9 +241,12 @@
             <div class="drill-block">
               <div class="drill-title"><span>一键物理实验</span><small>固定球位，只改变杆法</small></div>
               <div class="drill-grid">
-                <button type="button" data-drill="railFrozen">贴库球</button>
-                <button type="button" data-drill="english">顺反塞吃库</button>
-                <button type="button" data-drill="follow">高杆吸库</button>
+                <button type="button" data-drill="draw" aria-pressed="false">长台低杆</button>
+                <button type="button" data-drill="follow" aria-pressed="false">高杆吸库</button>
+                <button type="button" data-drill="masse" aria-pressed="false">扎杆弧线</button>
+                <button type="button" data-drill="gear" aria-pressed="false">齿轮抛掷</button>
+                <button type="button" data-drill="english" aria-pressed="false">顺反塞吃库</button>
+                <button type="button" data-drill="railFrozen" aria-pressed="false">贴库球</button>
               </div>
               <p id="drillHint">推荐先打“顺反塞吃库”，左右塞各打一杆，对照入射角与反弹角。</p>
               <button id="placementToggle" class="placement-button" type="button">
@@ -251,26 +263,33 @@
               <label class="select-shell full"><span>台呢速度</span><select id="clothPreset"><option value="fast">比赛快台</option><option value="standard" selected>标准台呢</option><option value="slow">慢速绒布</option></select></label>
             </div>
             <div class="physics-row">
+              <label class="select-shell full"><span>球台配色</span><select id="tableTheme"><option value="club" selected>墨绿 · 胡桃木</option><option value="blue">比赛蓝 · 深木</option><option value="classic">经典绿 · 暖木</option></select></label>
+            </div>
+            <div class="physics-row">
               <label class="select-shell full"><span>球组外观</span><select id="ballSkin"><option value="tv" selected>TV 高清经典</option><option value="palladium">Palladium 三叶徽章</option></select></label>
             </div>
             <p class="equipment-hint" id="equipmentHint">乔氏金腿式赛事台 · 中式比赛级顺毛台呢 · 小头低偏移杆 / 中等皮头</p>
+            <label class="switch-row sound-setting"><span>碰撞音效</span><input id="soundSetting" type="checkbox" checked><i class="switch"></i></label>
             <div class="telemetry-grid">
               <div><small>母球速度</small><strong id="speedValue">0.00</strong><span>m/s</span></div>
               <div><small>转动速度</small><strong id="liveRpmValue">0</strong><span>rpm</span></div>
               <div><small>运动状态</small><strong id="motionStateValue">静止</strong><span id="slipValue">无滑动</span></div>
               <div><small>系统能量</small><strong id="energyValue">0.00</strong><span>J</span></div>
             </div>
+            <div class="table-specs" id="tableSpecs"></div>
+            <div class="footer-meta simulation-meta"><span><i class="offline-dot"></i>本地运行</span><span id="fpsCounter">60 FPS</span><span id="physicsRate">PHYSICS 1 kHz</span></div>
           </section>
+          </div>
         </div>
       </aside>
     </main>
 
     <footer class="bottom-bar">
       <div class="playback-controls">
-        <button id="undoButton" class="footer-button" type="button" title="撤销上一杆">
+        <button id="undoButton" class="footer-button" type="button" title="撤销上一杆" aria-label="撤销上一杆" disabled>
           <svg viewBox="0 0 24 24"><path d="M9 7 4 12l5 5M5 12h8a6 6 0 0 1 6 6"/></svg><span>撤销</span>
         </button>
-        <button id="pauseButton" class="footer-button" type="button">
+        <button id="pauseButton" class="footer-button" type="button" aria-label="暂停模拟">
           <svg class="pause-icon" viewBox="0 0 24 24"><path d="M7 5h4v14H7zM14 5h4v14h-4z"/></svg>
           <svg class="play-icon" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7z"/></svg>
           <span>暂停</span>
@@ -281,19 +300,18 @@
         <div class="timeline-label"><span id="shotLabel">第 1 杆</span><small id="shotHint">瞄准线显示考虑当前杆法后的模拟轨迹</small></div>
         <div class="timeline-track"><span id="timelineProgress"></span><i id="timelineKnob"></i></div>
       </div>
-      <div class="footer-meta">
-        <span><i class="offline-dot"></i>OFFLINE</span>
-        <span id="fpsCounter">60 FPS</span>
-        <span id="physicsRate">PHYSICS 1 kHz</span>
-      </div>
+      <button id="shootButton" class="shoot-button" type="button" aria-keyshortcuts="Space">
+        <span class="shoot-icon" aria-hidden="true"><i></i></span>
+        <span><strong>击球</strong><small>SPACE ↵</small></span>
+      </button>
     </footer>
   </div>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
-  <dialog id="helpDialog" class="help-dialog">
+  <dialog id="helpDialog" class="help-dialog" aria-labelledby="helpTitle">
     <div class="dialog-head">
-      <div><span>CUELAB · GUIDE</span><h2>从“看见”物理开始练球</h2></div>
+      <div><span>CUELAB · GUIDE</span><h2 id="helpTitle">从“看见”物理开始练球</h2></div>
       <button id="closeHelp" class="icon-button" type="button" aria-label="关闭帮助">×</button>
     </div>
     <div class="dialog-body">
@@ -314,6 +332,7 @@
         <span><kbd>X</kbd> 复位让点</span>
         <span><kbd>Shift</kbd> 微调加速 ×4</span>
         <span><kbd>B</kbd> 手动摆球</span>
+        <span><kbd>F</kbd> 专注球台</span>
         <span><kbd>右键拖动</kbd> 旋转视角</span>
         <span><kbd>双击右键</kbd> 复位视角</span>
         <span><kbd>Space</kbd> 击球</span><span><kbd>R</kbd> 重新摆球</span><span><kbd>G</kbd> 辅助线</span><span><kbd>M</kbd> 慢动作档位</span><span><kbd>Esc</kbd> 暂停</span>
@@ -324,6 +343,7 @@
 
   <script src="js/math.js"></script>
   <script src="js/physics.js"></script>
+  <script src="js/drills.js"></script>
   <script src="js/renderer.js"></script>
   <script src="js/app.js"></script>
 </body>

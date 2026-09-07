@@ -106,7 +106,7 @@ for (const mode of ['chineseEight', 'practice', 'eight', 'nine', 'snooker']) {
   assert.ok(Math.abs(world.table.sideMouth - world.table.cornerMouth - 0.015) < 1e-9,
     'CBSA rule: the middle mouth is 15 mm wider than the corner mouth');
   assert.ok(Math.abs(Math.sqrt(2) * (world.table.cornerGap + world.table.jawRadius) - 2 * world.table.jawRadius - 0.085) < 1e-9);
-  assert.ok(Math.abs(2 * world.table.sideGap - 2 * world.table.jawRadius - 0.100) < 1e-9);
+  assert.ok(Math.abs(2 * world.table.sideGap - 2 * world.table.sideJawRadius - 0.100) < 1e-9);
   assert.equal(world.table.jaws.length, 12, 'six pockets must have two physical jaws each');
   for (const jaw of world.table.jaws) {
     const centreAtContact = {
@@ -370,10 +370,11 @@ function lateralAtOnePointTwoMetres(elevation) {
     }
     assert.equal(cue.pocketId, pocket.id, `${pocket.id}: centred shot was not captured by the intended pocket`);
     assert.ok(maxStep < 0.008, `${pocket.id}: mouth caused a discontinuous position correction`);
-    const distanceBefore = Math.hypot(cue.pos.x - cue.sinkTarget.x, cue.pos.z - cue.sinkTarget.z);
+    const depthBefore = cue.sinkDepth;
+    const radiusBefore = cue.radius;
     for (let i = 0; i < 25; i += 1) world.step(1 / 300);
-    const distanceAfter = Math.hypot(cue.pos.x - cue.sinkTarget.x, cue.pos.z - cue.sinkTarget.z);
-    assert.ok(distanceAfter < distanceBefore, `${pocket.id}: animation did not continue into the liner`);
+    assert.ok(cue.sinkDepth > depthBefore + 0.015, `${pocket.id}: gravity did not carry the ball down the liner`);
+    assert.equal(cue.radius, radiusBefore, 'falling must not shrink the physical ball');
   }
 }
 
@@ -383,7 +384,7 @@ function lateralAtOnePointTwoMetres(elevation) {
 {
   const geometry = new PhysicsWorld('chineseEight', { silent: true });
   const R = geometry.params.radius;
-  const corridor = geometry.table.sideGap - geometry.table.jawRadius - R;
+  const corridor = geometry.table.sideMouth / 2 - R;
   for (const offset of [-corridor * 0.92, 0, corridor * 0.92]) {
     const world = new PhysicsWorld('chineseEight', { silent: true });
     const cue = world.getCueBall(); world.balls = [cue];
