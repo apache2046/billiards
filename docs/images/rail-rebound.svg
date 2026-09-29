@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="460" viewBox="0 0 760 460" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif">
+<rect x="0.5" y="0.5" width="759" height="459" rx="14" fill="#ffffff" stroke="#d9dfdc"/>
+<text x="24" y="34" font-size="19" font-weight="700" fill="#1f2a28">吃库角度：模型 vs Dr Dave / Jewett 实测（TP B.11）</text>
+<text x="24" y="56" font-size="12.5" fill="#5d6966">美式台，慢速滚动母球、无侧塞；角度均从库线量起</text>
+<line x1="70" y1="78" x2="70" y2="378" stroke="#e3e7e5"/>
+<text x="70" y="398" font-size="12" text-anchor="middle" fill="#5d6966">0</text>
+<line x1="181" y1="78" x2="181" y2="378" stroke="#e3e7e5"/>
+<text x="181" y="398" font-size="12" text-anchor="middle" fill="#5d6966">15</text>
+<line x1="292" y1="78" x2="292" y2="378" stroke="#e3e7e5"/>
+<text x="292" y="398" font-size="12" text-anchor="middle" fill="#5d6966">30</text>
+<line x1="403" y1="78" x2="403" y2="378" stroke="#e3e7e5"/>
+<text x="403" y="398" font-size="12" text-anchor="middle" fill="#5d6966">45</text>
+<line x1="514" y1="78" x2="514" y2="378" stroke="#e3e7e5"/>
+<text x="514" y="398" font-size="12" text-anchor="middle" fill="#5d6966">60</text>
+<line x1="625" y1="78" x2="625" y2="378" stroke="#e3e7e5"/>
+<text x="625" y="398" font-size="12" text-anchor="middle" fill="#5d6966">75</text>
+<line x1="736" y1="78" x2="736" y2="378" stroke="#e3e7e5"/>
+<text x="736" y="398" font-size="12" text-anchor="middle" fill="#5d6966">90</text>
+<line x1="70" y1="378" x2="736" y2="378" stroke="#e3e7e5"/>
+<text x="60" y="382" font-size="12" text-anchor="end" fill="#5d6966">0</text>
+<line x1="70" y1="328" x2="736" y2="328" stroke="#e3e7e5"/>
+<text x="60" y="332" font-size="12" text-anchor="end" fill="#5d6966">15</text>
+<line x1="70" y1="278" x2="736" y2="278" stroke="#e3e7e5"/>
+<text x="60" y="282" font-size="12" text-anchor="end" fill="#5d6966">30</text>
+<line x1="70" y1="228" x2="736" y2="228" stroke="#e3e7e5"/>
+<text x="60" y="232" font-size="12" text-anchor="end" fill="#5d6966">45</text>
+<line x1="70" y1="178" x2="736" y2="178" stroke="#e3e7e5"/>
+<text x="60" y="182" font-size="12" text-anchor="end" fill="#5d6966">60</text>
+<line x1="70" y1="128" x2="736" y2="128" stroke="#e3e7e5"/>
+<text x="60" y="132" font-size="12" text-anchor="end" fill="#5d6966">75</text>
+<line x1="70" y1="78" x2="736" y2="78" stroke="#e3e7e5"/>
+<text x="60" y="82" font-size="12" text-anchor="end" fill="#5d6966">90</text>
+<rect x="70" y="78" width="666" height="300" fill="none" stroke="#c9d1ce"/>
+<text x="403" y="422" font-size="13" text-anchor="middle" fill="#1f2a28">入库角（°，离库线）</text>
+<text transform="translate(20 228) rotate(-90)" font-size="13" text-anchor="middle" fill="#1f2a28">出库角（°，离库线）</text>
+<path d="M70.0,378.0 L736.0,78.0" fill="none" stroke="#b9c3bf" stroke-width="1.4" stroke-dasharray="5 5" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M114.4,364.4 L129.2,359.1 L144.0,353.7 L158.8,348.0 L173.6,342.2 L188.4,336.2 L203.2,329.9 L218.0,323.5 L232.8,316.9 L247.6,310.1 L262.4,303.1 L277.2,296.0 L292.0,288.7 L306.8,281.2 L321.6,273.6 L336.4,266.1 L351.2,258.4 L366.0,250.7 L380.8,242.8 L395.6,235.0 L410.4,227.1 L425.2,219.5 L440.0,211.6 L454.8,204.0 L469.6,196.4 L484.4,188.9 L499.2,181.5 L514.0,174.3 L528.8,167.9 L543.6,161.3 L558.4,154.9 L573.2,148.6 L588.0,142.2 L602.8,135.8 L617.6,129.3 L632.4,122.9 L647.2,116.5 L662.0,110.0 L676.8,103.6 L691.6,97.2" fill="none" stroke="#2f6fd0" stroke-width="2.6"  stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M114.4,370.3 L129.2,367.9 L144.0,365.2 L158.8,362.3 L173.6,359.1 L188.4,355.7 L203.2,352.1 L218.0,348.2 L232.8,344.0 L247.6,339.5 L262.4,334.8 L277.2,329.9 L292.0,324.6 L306.8,318.9 L321.6,313.0 L336.4,307.0 L351.2,300.6 L366.0,293.9 L380.8,286.8 L395.6,279.5 L410.4,271.8 L425.2,264.3 L440.0,256.2 L454.8,247.8 L469.6,239.5 L484.4,230.8 L499.2,222.1 L514.0,213.4 L528.8,205.8 L543.6,197.5 L558.4,189.3 L573.2,181.2 L588.0,172.8 L602.8,164.0 L617.6,155.0 L632.4,145.9 L647.2,136.6 L662.0,126.9 L676.8,117.2 L691.6,107.5" fill="none" stroke="#0f9b77" stroke-width="2.6"  stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="144" cy="361.3333333333333" r="5.2" fill="#fff" stroke="#8a5cc2" stroke-width="2.4"/>
+<circle cx="218" cy="343" r="5.2" fill="#fff" stroke="#8a5cc2" stroke-width="2.4"/>
+<circle cx="292" cy="301.33333333333337" r="5.2" fill="#fff" stroke="#8a5cc2" stroke-width="2.4"/>
+<circle cx="366" cy="254.66666666666669" r="5.2" fill="#fff" stroke="#8a5cc2" stroke-width="2.4"/>
+<circle cx="440" cy="224.66666666666669" r="5.2" fill="#fff" stroke="#8a5cc2" stroke-width="2.4"/>
+<circle cx="514" cy="191.33333333333334" r="5.2" fill="#fff" stroke="#8a5cc2" stroke-width="2.4"/>
+<circle cx="588" cy="144.66666666666666" r="5.2" fill="#fff" stroke="#8a5cc2" stroke-width="2.4"/>
+<circle cx="662" cy="111.5" r="5.2" fill="#fff" stroke="#8a5cc2" stroke-width="2.4"/>
+<circle cx="144" cy="366.3333333333333" r="5.2" fill="#e0892b" stroke="#e0892b" stroke-width="2.4"/>
+<circle cx="218" cy="350" r="5.2" fill="#e0892b" stroke="#e0892b" stroke-width="2.4"/>
+<circle cx="292" cy="321.6666666666667" r="5.2" fill="#e0892b" stroke="#e0892b" stroke-width="2.4"/>
+<circle cx="366" cy="294" r="5.2" fill="#e0892b" stroke="#e0892b" stroke-width="2.4"/>
+<circle cx="440" cy="259" r="5.2" fill="#e0892b" stroke="#e0892b" stroke-width="2.4"/>
+<circle cx="514" cy="215.66666666666666" r="5.2" fill="#e0892b" stroke="#e0892b" stroke-width="2.4"/>
+<circle cx="588" cy="164.33333333333334" r="5.2" fill="#e0892b" stroke="#e0892b" stroke-width="2.4"/>
+<circle cx="662" cy="126.33333333333331" r="5.2" fill="#e0892b" stroke="#e0892b" stroke-width="2.4"/>
+<rect x="82" y="86" width="194" height="115" rx="8" fill="#ffffff" fill-opacity="0.94" stroke="#e1e6e4"/>
+<circle cx="105" cy="103" r="5" fill="#fff" stroke="#8a5cc2" stroke-width="2.4"/>
+<text x="124" y="107.5" font-size="12.5" fill="#1f2a28">实测：刚离库（高速摄像）</text>
+<line x1="94" y1="124" x2="116" y2="124" stroke="#2f6fd0" stroke-width="2.6" />
+<text x="124" y="128.5" font-size="12.5" fill="#1f2a28">模型：刚离库</text>
+<circle cx="105" cy="145" r="5" fill="#e0892b" stroke="#e0892b" stroke-width="2.4"/>
+<text x="124" y="149.5" font-size="12.5" fill="#1f2a28">实测：回弯后（到下一库）</text>
+<line x1="94" y1="166" x2="116" y2="166" stroke="#0f9b77" stroke-width="2.6" />
+<text x="124" y="170.5" font-size="12.5" fill="#1f2a28">模型：回弯后</text>
+<line x1="94" y1="187" x2="116" y2="187" stroke="#b9c3bf" stroke-width="2.6" stroke-dasharray="5 5"/>
+<text x="124" y="191.5" font-size="12.5" fill="#1f2a28">镜面反射（入 = 出）</text>
+<text x="736" y="448" font-size="11" text-anchor="end" fill="#5d6966">数据：drdavepoolinfo.com TP B.11</text>
+</svg>

@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="460" viewBox="0 0 760 460" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif">
+<rect x="0.5" y="0.5" width="759" height="459" rx="14" fill="#ffffff" stroke="#d9dfdc"/>
+<text x="24" y="34" font-size="19" font-weight="700" fill="#1f2a28">库边回弹：滚动球正撞库的出/入速度比</text>
+<text x="24" y="56" font-size="12.5" fill="#5d6966">美式按 Dr Dave（TP B.6、HSV B.15）标定；斯诺克按 Mathavan 等（AJP 2009）；中式沿用斯诺克式钢库胶边</text>
+<line x1="70" y1="78" x2="70" y2="378" stroke="#e3e7e5"/>
+<text x="70" y="398" font-size="12" text-anchor="middle" fill="#5d6966">0</text>
+<line x1="153.25" y1="78" x2="153.25" y2="378" stroke="#e3e7e5"/>
+<text x="153.25" y="398" font-size="12" text-anchor="middle" fill="#5d6966">0.5</text>
+<line x1="236.5" y1="78" x2="236.5" y2="378" stroke="#e3e7e5"/>
+<text x="236.5" y="398" font-size="12" text-anchor="middle" fill="#5d6966">1</text>
+<line x1="319.75" y1="78" x2="319.75" y2="378" stroke="#e3e7e5"/>
+<text x="319.75" y="398" font-size="12" text-anchor="middle" fill="#5d6966">1.5</text>
+<line x1="403" y1="78" x2="403" y2="378" stroke="#e3e7e5"/>
+<text x="403" y="398" font-size="12" text-anchor="middle" fill="#5d6966">2</text>
+<line x1="486.25" y1="78" x2="486.25" y2="378" stroke="#e3e7e5"/>
+<text x="486.25" y="398" font-size="12" text-anchor="middle" fill="#5d6966">2.5</text>
+<line x1="569.5" y1="78" x2="569.5" y2="378" stroke="#e3e7e5"/>
+<text x="569.5" y="398" font-size="12" text-anchor="middle" fill="#5d6966">3</text>
+<line x1="652.75" y1="78" x2="652.75" y2="378" stroke="#e3e7e5"/>
+<text x="652.75" y="398" font-size="12" text-anchor="middle" fill="#5d6966">3.5</text>
+<line x1="736" y1="78" x2="736" y2="378" stroke="#e3e7e5"/>
+<text x="736" y="398" font-size="12" text-anchor="middle" fill="#5d6966">4</text>
+<line x1="70" y1="378" x2="736" y2="378" stroke="#e3e7e5"/>
+<text x="60" y="382" font-size="12" text-anchor="end" fill="#5d6966">0.3</text>
+<line x1="70" y1="335.1428571428571" x2="736" y2="335.1428571428571" stroke="#e3e7e5"/>
+<text x="60" y="339.1428571428571" font-size="12" text-anchor="end" fill="#5d6966">0.4</text>
+<line x1="70" y1="292.2857142857143" x2="736" y2="292.2857142857143" stroke="#e3e7e5"/>
+<text x="60" y="296.2857142857143" font-size="12" text-anchor="end" fill="#5d6966">0.5</text>
+<line x1="70" y1="249.42857142857142" x2="736" y2="249.42857142857142" stroke="#e3e7e5"/>
+<text x="60" y="253.42857142857142" font-size="12" text-anchor="end" fill="#5d6966">0.6</text>
+<line x1="70" y1="206.57142857142858" x2="736" y2="206.57142857142858" stroke="#e3e7e5"/>
+<text x="60" y="210.57142857142858" font-size="12" text-anchor="end" fill="#5d6966">0.7</text>
+<line x1="70" y1="163.71428571428572" x2="736" y2="163.71428571428572" stroke="#e3e7e5"/>
+<text x="60" y="167.71428571428572" font-size="12" text-anchor="end" fill="#5d6966">0.8</text>
+<line x1="70" y1="120.85714285714283" x2="736" y2="120.85714285714283" stroke="#e3e7e5"/>
+<text x="60" y="124.85714285714283" font-size="12" text-anchor="end" fill="#5d6966">0.9</text>
+<line x1="70" y1="78" x2="736" y2="78" stroke="#e3e7e5"/>
+<text x="60" y="82" font-size="12" text-anchor="end" fill="#5d6966">1.0</text>
+<rect x="70" y="78" width="666" height="300" fill="none" stroke="#c9d1ce"/>
+<text x="403" y="422" font-size="13" text-anchor="middle" fill="#1f2a28">入库速度（m/s）</text>
+<text transform="translate(20 228) rotate(-90)" font-size="13" text-anchor="middle" fill="#1f2a28">出/入速度比</text>
+<rect x="70" y="172.28571428571425" width="666" height="51.428571428571445" fill="#e0892b" opacity="0.12"/>
+<rect x="116.62" y="99.42857142857144" width="369.63" height="34.28571428571425" fill="#8a5cc2" opacity="0.16"/>
+<rect x="519.55" y="142.28571428571425" width="116.55000000000007" height="17.142857142857167" fill="#8a5cc2" opacity="0.16"/>
+<path d="M153.3,122.3 L174.1,110.7 L194.9,104.5 L215.7,101.4 L236.5,100.3 L257.3,100.4 L278.1,101.5 L298.9,103.2 L319.8,105.5 L340.6,108.1 L361.4,111.0 L382.2,114.1 L403.0,117.4 L423.8,120.9 L444.6,124.6 L465.4,128.3 L486.3,132.2 L507.1,136.1 L527.9,140.1 L548.7,144.1 L569.5,148.2 L590.3,152.4 L611.1,156.6 L631.9,160.8 L652.8,165.1" fill="none" stroke="#8a5cc2" stroke-width="2" stroke-dasharray="6 5" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M111.6,210.2 L132.4,203.9 L153.3,199.5 L174.1,197.5 L194.9,195.2 L215.7,194.1 L236.5,193.0 L257.3,192.3 L278.1,191.9 L298.9,191.9 L319.8,191.9 L340.6,191.2 L361.4,191.6 L382.2,191.4 L403.0,192.0 L423.8,192.3 L444.6,192.8 L465.4,193.0 L486.3,193.5 L507.1,193.8 L527.9,194.2 L548.7,194.5 L569.5,194.7 L590.3,195.9 L611.1,196.4 L631.9,196.4 L652.8,197.6 L673.6,197.8 L694.4,199.1 L715.2,199.0 L736.0,200.3" fill="none" stroke="#0f9b77" stroke-width="2.6"  stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M111.6,126.9 L132.4,126.2 L153.3,126.3 L174.1,126.6 L194.9,127.1 L215.7,127.8 L236.5,128.9 L257.3,130.6 L278.1,131.5 L298.9,132.3 L319.8,133.0 L340.6,134.8 L361.4,136.1 L382.2,137.0 L403.0,138.0 L423.8,139.8 L444.6,141.4 L465.4,142.6 L486.3,143.4 L507.1,144.5 L527.9,146.2 L548.7,147.5 L569.5,148.3 L590.3,149.6 L611.1,151.4 L631.9,152.3 L652.8,153.9 L673.6,154.5 L694.4,156.5 L715.2,156.8 L736.0,159.1" fill="none" stroke="#2f6fd0" stroke-width="2.6"  stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M111.6,120.9 L132.4,120.1 L153.3,120.5 L174.1,121.2 L194.9,121.8 L215.7,123.1 L236.5,123.8 L257.3,124.8 L278.1,126.0 L298.9,128.2 L319.8,128.9 L340.6,129.9 L361.4,131.2 L382.2,132.8 L403.0,133.8 L423.8,135.4 L444.6,136.2 L465.4,137.3 L486.3,138.8 L507.1,139.8 L527.9,141.2 L548.7,142.9 L569.5,144.6 L590.3,145.6 L611.1,146.6 L631.9,148.8 L652.8,149.0 L673.6,151.3 L694.4,151.9 L715.2,153.6 L736.0,155.0" fill="none" stroke="#b0527a" stroke-width="2.6"  stroke-linejoin="round" stroke-linecap="round"/>
+<rect x="267.5" y="234" width="456.5" height="136" rx="8" fill="#ffffff" fill-opacity="0.94" stroke="#e1e6e4"/>
+<line x1="279.5" y1="251" x2="301.5" y2="251" stroke="#0f9b77" stroke-width="2.6" />
+<text x="309.5" y="255.5" font-size="12.5" fill="#1f2a28">模型：美式</text>
+<line x1="279.5" y1="272" x2="301.5" y2="272" stroke="#2f6fd0" stroke-width="2.6" />
+<text x="309.5" y="276.5" font-size="12.5" fill="#1f2a28">模型：中式</text>
+<line x1="279.5" y1="293" x2="301.5" y2="293" stroke="#b0527a" stroke-width="2.6" />
+<text x="309.5" y="297.5" font-size="12.5" fill="#1f2a28">模型：斯诺克</text>
+<rect x="279.5" y="308" width="22" height="12" fill="#8a5cc2" opacity="0.25"/>
+<text x="309.5" y="318.5" font-size="12.5" fill="#1f2a28">Mathavan 2009 斯诺克 31 杆实测点范围</text>
+<line x1="279.5" y1="335" x2="301.5" y2="335" stroke="#8a5cc2" stroke-width="2.6" stroke-dasharray="6 5"/>
+<text x="309.5" y="339.5" font-size="12.5" fill="#1f2a28">Mathavan 2009 二次拟合</text>
+<rect x="279.5" y="350" width="22" height="12" fill="#e0892b" opacity="0.25"/>
+<text x="309.5" y="360.5" font-size="12.5" fill="#1f2a28">Dr Dave：美式约 0.7（HSV B.15 实测 0.72）</text>
+<text x="736" y="448" font-size="11" text-anchor="end" fill="#5d6966">数据：Am. J. Phys. 77, 788；drdavepoolinfo.com TP B.6 / HSV B.15</text>
+</svg>
