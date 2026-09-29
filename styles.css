@@ -115,6 +115,11 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 .hud-bar i { position: absolute; inset: 0 auto 0 0; width: 62%; border-radius: inherit; background: linear-gradient(90deg, #149b77, var(--green-bright)); }
 
 .ball-tray { position: absolute; z-index: 7; top: 14px; left: 50%; width: min(560px, 58%); padding: 9px 12px; border-radius: 10px; transform: translateX(-50%); }
+.rule-choice { position: absolute; z-index: 8; top: 80px; left: 50%; display: grid; gap: 8px; width: min(520px, calc(100% - 36px)); padding: 14px 16px; border-radius: 10px; transform: translateX(-50%); color: #dff9f0; }
+.rule-choice strong { font-size: 14px; letter-spacing: .06em; color: #f3e3b0; }
+.rule-choice p { margin: 0; font-size: 12px; line-height: 1.6; color: #c9dcd3; }
+.rule-choice-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.rule-choice-actions button { flex: 1 1 140px; }
 .tray-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 7px; }
 .tray-head > span { color: var(--gold); font-size: 9px; font-weight: 700; letter-spacing: .08em; }
 .tray-chips { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -324,6 +329,8 @@ kbd { display: inline-block; min-width: 24px; padding: 3px 5px; border: 1px soli
 .panel-intro small { font-size: 9px; color: var(--gold); letter-spacing: .15em; }
 .panel-intro h1 { font-size: 22px; font-weight: 550; margin: 8px 0 0; letter-spacing: .06em; }
 .panel-ball { width: 32px; height: 32px; display: grid; place-items: center; border: 6px solid #333e3d; border-radius: 50%; color: #1c2324; background: #dbdbcd; font: 700 12px Georgia, serif; box-shadow: 0 0 0 1px #cbd7c520; }
+.panel-ball[data-kind="nine"] { border-color: #d9a82e; }
+.panel-ball[data-kind="snooker"] { border: 0; background: radial-gradient(circle at 34% 30%, #e46a6c 0 12%, #b3282d 46%, #6c1418 100%); }
 .panel-tabs { display: flex; gap: 4px; margin: 0 22px 6px; padding: 4px; background: #101819; border-radius: 10px; }
 .panel-tabs button { flex: 1; min-height: 36px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer; }
 .panel-tabs button[aria-selected="true"] { color: var(--text); background: #2c3937; box-shadow: 0 2px 5px #0002; }
@@ -400,6 +407,12 @@ kbd { display: inline-block; min-width: 24px; padding: 3px 5px; border: 1px soli
 .shoot-button small { font-size: 10px; color: #446555; }
 .shoot-button:disabled { opacity: .45; }
 .toast { font-size: 13px; line-height: 1.6; background: #23322e; border-color: #a6c3ae40; bottom: 94px; }
+/* Side-by-side layout: centre toasts over the table, above the guide legend,
+   so a long message never covers half of the legend. */
+@media (min-width: 791px) {
+  .toast { left: calc((100% - var(--panel-width)) / 2); bottom: 148px; }
+  .app-shell.focused + .toast { left: 50%; }
+}
 .ball-tray { top: 80px; width: min(540px, 70%); }
 .tray-head > span, .tray-empty { font-size: 11px; }
 .tray-chip { width: 34px; height: 34px; font-size: 12px; }
@@ -503,6 +516,14 @@ kbd { display: inline-block; min-width: 24px; padding: 3px 5px; border: 1px soli
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
+
+@media (max-width: 560px) {
+  /* The choice must fit the short phone stage above the controls. */
+  .rule-choice { top: 8px; gap: 6px; padding: 10px 12px; }
+  .rule-choice p { font-size: 11px; line-height: 1.45; }
+  .rule-choice-actions { gap: 6px; }
+  .rule-choice-actions button { flex: 1 1 96px; min-height: 34px; padding: 5px 8px; font-size: 12px; }
 }
 
 @media (max-width: 360px) {

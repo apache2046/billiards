@@ -94,19 +94,19 @@ for (const mode of ['chineseEight', 'practice', 'eight', 'nine', 'snooker']) {
 }
 
 // Default Chinese-eight setup follows the 9-foot Q8-style playing area with
-// rounded jaws: 85 mm corner mouths at the narrowest arc-to-arc point, and a
-// middle mouth 15 mm wider per the CBSA equipment rule.  The 8 is centred and
-// the rear corners are opposite groups.
+// rounded jaws: 85 mm corner mouths at the narrowest arc-to-arc point and the
+// 86 mm middle mouth of GB/T 22751-2008.  The rack follows CBSA §3: apex on
+// the foot spot, the 8 in the centre, one solid and one stripe on the rear
+// corners, every ball frozen to its neighbours — and never a perfect lattice.
 {
   const world = new PhysicsWorld(undefined, { silent: true });
   assert.equal(world.mode, 'chineseEight');
   assert.equal(world.table.name, '乔氏金腿式赛事台');
   assert.equal(world.table.width, 2.54);
   assert.equal(world.table.height, 1.26);
-  assert.ok(Math.abs(world.table.sideMouth - world.table.cornerMouth - 0.015) < 1e-9,
-    'CBSA rule: the middle mouth is 15 mm wider than the corner mouth');
+  assert.ok(Math.abs(world.table.sideMouth - 0.086) < 1e-9, 'GB/T 22751: the middle mouth is 86 mm');
   assert.ok(Math.abs(Math.sqrt(2) * (world.table.cornerGap + world.table.jawRadius) - 2 * world.table.jawRadius - 0.085) < 1e-9);
-  assert.ok(Math.abs(2 * world.table.sideGap - 2 * world.table.sideJawRadius - 0.100) < 1e-9);
+  assert.ok(Math.abs(2 * world.table.sideGap - 2 * world.table.sideJawRadius - 0.086) < 1e-9);
   assert.equal(world.table.jaws.length, 12, 'six pockets must have two physical jaws each');
   for (const jaw of world.table.jaws) {
     const centreAtContact = {
@@ -119,18 +119,78 @@ for (const mode of ['chineseEight', 'practice', 'eight', 'nine', 'snooker']) {
     assert.ok(Math.abs(dx / distance - jaw.normal.x) < 1e-9 && Math.abs(dz / distance - jaw.normal.z) < 1e-9,
       `${jaw.id}: jaw normal is discontinuous at tangent`);
   }
-  const eight = world.getBall('8');
-  assert.ok(Math.abs(eight.pos.z) < 1e-9, '8 ball is not in the rack centre');
+  const R = world.params.radius;
+  const rack = world.balls.filter((ball) => ball.id !== 'cue');
+  const near = (ball, x, z) => Math.hypot(ball.pos.x - x, ball.pos.z - z) < 3e-4;
+  assert.ok(near(world.getBall('1'), world.table.rackApex, 0), 'apex ball is not on the foot spot');
+  assert.ok(near(world.getBall('8'), world.table.rackApex + 2 * Math.sqrt(3) * R, 0), '8 ball is not in the rack centre');
   // Select the rear corners by rack position, not ball number, so a scrambled
   // rack order cannot slip past this assertion.
-  const spacing = 2 * world.params.radius + 0.00075;
-  const rearX = world.table.rackApex + 4 * Math.sqrt(3) * (spacing / 2);
-  const rear = [-2, 2].map((k) => world.balls.find(
-    (ball) => Math.abs(ball.pos.x - rearX) < 1e-9 && Math.abs(ball.pos.z - k * spacing) < 1e-9,
-  ));
+  const rearX = world.table.rackApex + 4 * Math.sqrt(3) * R;
+  const rear = [-4, 4].map((k) => rack.find((ball) => near(ball, rearX, k * R)));
   assert.ok(rear[0] && rear[1], 'rear corner balls missing from the rack coordinates');
   assert.deepEqual(new Set(rear.map((ball) => ball.kind)), new Set(['solid', 'stripe']),
     'rear corners must hold one solid and one stripe');
+  // Lattice neighbours are found with a loose 1 mm radius, so a ball that
+  // drifts off its neighbours fails the gap bound instead of dropping out.
+  const gaps = [];
+  for (const ball of rack) {
+    const neighbours = rack.filter((other) => other !== ball
+      && Math.hypot(other.pos.x - ball.pos.x, other.pos.z - ball.pos.z) < 2 * R + 1e-3);
+    assert.ok(neighbours.length >= 2, `ball ${ball.id} is not frozen into the rack`);
+    neighbours.forEach((other) => gaps.push(Math.hypot(other.pos.x - ball.pos.x, other.pos.z - ball.pos.z) - 2 * R));
+  }
+  assert.ok(Math.max(...gaps) < 2e-4, 'rack gaps must stay within a frozen rack\'s tolerance');
+  assert.ok(Math.max(...gaps) - Math.min(...gaps) > 1e-5, 'a perfect lattice breaks like a Newton\'s cradle');
+  const again = new PhysicsWorld('chineseEight', { silent: true });
+  assert.deepEqual(again.balls.map((ball) => ball.pos), world.balls.map((ball) => ball.pos), 'the default rack must be reproducible');
+  const other = new PhysicsWorld('chineseEight', { silent: true, rackSeed: 77 });
+  assert.notDeepEqual(other.balls.map((ball) => ball.pos), world.balls.map((ball) => ball.pos), 'a new seed must give a new rack');
+}
+
+// A ball that flies over a cushion away from the pockets has left the table
+// (CBSA §9.3): it is reported as off the table, not dropped into whichever
+// pocket happens to be nearest when it comes down.
+{
+  const world = new PhysicsWorld('chineseEight', { silent: true });
+  const events = [];
+  world.onEvent((event) => events.push(event));
+  const cue = world.getCueBall();
+  world.strike({ direction: { x: 0, z: 1 }, speed: 6.3, tipX: 0, tipY: 0, elevation: 45 });
+  for (let i = 0; i < 5000 && world.isMoving(); i += 1) world.step(1 / 1000);
+  assert.ok(events.some((event) => event.type === 'offTable' && event.ballId === 'cue'), 'jumped cue ball was not reported off the table');
+  assert.ok(!events.some((event) => event.type === 'pocket'), 'a ball that left the table was scored as a pot');
+  assert.equal(cue.offTable, true);
+  assert.equal(world.isMoving(), false, 'an off-table ball must not keep the shot alive');
+  assert.equal(world.respotBall(cue, { x: world.table.cueStart, z: 0 }), true);
+  assert.equal(cue.offTable, false, 'respotting must bring the ball back into play');
+}
+
+// A full-power centre-ball break must open the rack: CBSA §5.1 needs a pot
+// or at least four object balls reaching a cushion.  The old perfect lattice
+// with 0.75 mm gaps left thirteen balls packed and sent only the two rear
+// corners to the rails.
+{
+  let legal = 0, railSum = 0;
+  const seeds = [1, 2, 3, 4, 5, 6];
+  for (const rackSeed of seeds) {
+    const world = new PhysicsWorld('chineseEight', { silent: true, rackSeed });
+    const events = [];
+    world.onEvent((event) => events.push(event));
+    const cue = world.getCueBall(), apex = world.getBall('1');
+    const aim = { x: apex.pos.x - cue.pos.x, z: apex.pos.z - cue.pos.z };
+    world.strike({ direction: aim, speed: 9.3, tipX: 0, tipY: 0, elevation: 3 });
+    for (let i = 0; i < 20000 && world.isMoving(); i += 1) world.step(1 / 1000);
+    const rails = new Set(events.filter((e) => e.type === 'cushion' && e.ballId !== 'cue').map((e) => e.ballId)).size;
+    const pots = events.filter((e) => e.type === 'pocket' && e.ballId !== 'cue').length;
+    railSum += rails;
+    if (pots || rails >= 4) legal += 1;
+    const packed = world.balls.filter((ball) => ball.id !== 'cue' && !ball.pocketed
+      && Math.hypot(ball.pos.x - world.table.rackApex - 0.1, ball.pos.z) < 0.15).length;
+    assert.ok(packed < 8, `seed ${rackSeed}: ${packed} balls still packed after a power break`);
+  }
+  assert.equal(legal, seeds.length, 'every power break must be legal');
+  assert.ok(railSum / seeds.length >= 6, `power breaks drive too few balls to the rails (${(railSum / seeds.length).toFixed(1)})`);
 }
 
 // The two sides of every straight-to-round tangent must give nearly the same
@@ -378,7 +438,7 @@ function lateralAtOnePointTwoMetres(elevation) {
   }
 }
 
-// The widened 100 mm middle mouth must swallow straight entries across its
+// The 86 mm middle mouth must swallow straight entries across its
 // whole jaw-to-jaw corridor, while a ball rolling along the cushion line past
 // the open mouth must sail through untouched (the jaws are exactly tangent).
 {
@@ -417,17 +477,24 @@ function lateralAtOnePointTwoMetres(elevation) {
   assert.ok(Math.abs(slow.squirt - impact.squirt) < 0.002, 'squirt should be nearly speed-independent');
 }
 
-// Elevating the cue drives part of the impulse into the slate: the surviving
-// horizontal speed scales with cos(elevation) while spin is kept in full.
+// Elevating the cue drives part of the impulse into the slate, and the
+// slate's reaction is a sliding friction contact of its own (Dr Dave TP B.10):
+// with e the slate restitution, v_h = v(cosθ − μ(1+e)sinθ) and the backspin
+// drops by (5/2R)·μ(1+e)·v·sinθ.  The tip's draw itself takes no cos(θ).
 {
   const world = new PhysicsWorld('chineseEight', { silent: true });
+  const R = world.params.radius, mu = world.params.muSlide, e = 0.6;
   const options = { direction: { x: 1, z: 0 }, speed: 3, tipX: 0, tipY: -0.5 };
   const flat = world.cueImpactMetrics({ ...options, elevation: 0 });
   const steep = world.cueImpactMetrics({ ...options, elevation: 30 });
-  const ratio = steep.horizontalSpeed / flat.horizontalSpeed;
-  assert.ok(Math.abs(ratio - Math.cos(30 * Math.PI / 180)) < 0.02, `elevation speed ratio ${ratio.toFixed(3)}`);
-  assert.ok(Math.abs(steep.omega.z - flat.omega.z) / Math.abs(flat.omega.z) < 0.02,
-    'draw spin should not lose a cos(elevation) factor');
+  const theta = 30 * Math.PI / 180;
+  assert.ok(steep.launchSpeed > 0, 'a 30° stroke at this speed should hop');
+  assert.ok(Math.abs(flat.horizontalSpeed - flat.speed) < 1e-12, 'a level stroke keeps its speed');
+  const expected = steep.speed * (Math.cos(theta) - mu * (1 + e) * Math.sin(theta));
+  assert.ok(Math.abs(steep.horizontalSpeed - expected) < 1e-9, `elevated speed ${steep.horizontalSpeed} vs TP B.10 ${expected}`);
+  // Draw along +x is ω_z > 0; the slate's backward friction removes spinLoss.
+  const spinLoss = 2.5 * mu * (1 + e) * steep.speed * Math.sin(theta) / R;
+  assert.ok(flat.omega.z > 0 && Math.abs(steep.omega.z - (flat.omega.z - spinLoss)) < 1e-6, 'backspin loss off the slate');
 }
 
 // Ball-ball throw rig: drive the cue ball into a straight or cut contact with a
@@ -644,7 +711,10 @@ function throwRig({ objectZ = 0, sideSpin = 0, roll = 0, speed = 1.5 }) {
   cue.pos = { x: -0.3, z: 0 }; object.pos = { x: 0, z: 0 }; object.vel = { x: 0, z: 0 };
   world.strike({ direction: { x: 1, z: 0 }, speed: 3, tipX: 0, tipY: -0.65, elevation: 3 });
   assert.equal(world.lastCueMetrics.miscue, false, 'a 0.65R aim-height draw must not miscue');
-  assert.ok(cue.omega.z > 100, `deep draw spin only ${cue.omega.z.toFixed(0)} rad/s`);
+  // Rigid tip impulse: ωR/v = 2.5·b/R at the contact offset b ≈ 0.48R, less
+  // tip losses — hard draw, but never above what a level cue can give.
+  const spinRatio = cue.omega.z * cue.radius / cue.vel.x;
+  assert.ok(spinRatio > 1.1 && spinRatio < 1.25, `deep draw spin ratio ${spinRatio.toFixed(2)}`);
   let contactX = null, minX = cue.pos.x;
   world.onEvent((e) => { if (e.type === 'ball-ball' && contactX == null) contactX = cue.pos.x; });
   for (let i = 0; i < 5000 && world.isMoving(); i += 1) {
@@ -877,6 +947,78 @@ function throwRig({ objectZ = 0, sideSpin = 0, roll = 0, speed = 1.5 }) {
     assert.ok(!(r.e0 > 1e-6 && r.maxE / r.e0 > 1 + 1e-6),
       `fuzz trial ${trial} (seed ${caseSeed}) created energy: maxE/E0=${(r.maxE / r.e0).toFixed(6)}`);
   }
+}
+
+// The aiming preview is advanced in wall-clock slices by the UI.  However it
+// is cut up, the run must sample exactly the path of one uninterrupted run,
+// and a still ball must keep its orientation bit for bit (a renormalised
+// quaternion used to change every step and defeat the idle frame cache).
+{
+  const shots = [
+    { mode: 'chineseEight', options: { direction: { x: 1, z: 0 }, speed: 8.5, tipX: 0, tipY: 0, elevation: 3 } },
+    { mode: 'snooker', options: { direction: { x: 1, z: 0.1 }, speed: 2.4, tipX: 0.3, tipY: -0.4, elevation: 2 } },
+  ];
+  for (const { mode, options } of shots) {
+    const whole = new PhysicsWorld(mode, { silent: true, rackSeed: 4 }).predictShot(options, 12, 1e9);
+    const world = new PhysicsWorld(mode, { silent: true, rackSeed: 4 });
+    const job = world.beginPrediction(options, 12);
+    let slices = 0;
+    while (!world.advancePrediction(job, 0.2)) slices += 1;
+    const sliced = world.predictionResult(job);
+    assert.ok(slices > 5, `${mode}: the sliced preview never yielded`);
+    assert.equal(sliced.duration, whole.duration, `${mode}: sliced preview ran a different length`);
+    assert.deepEqual([...sliced.paths.keys()], [...whole.paths.keys()]);
+    for (const [id, path] of whole.paths) assert.deepEqual(sliced.paths.get(id), path, `${mode}: ${id} path differs when sliced`);
+    assert.equal(sliced.events.length, whole.events.length);
+  }
+  const world = new PhysicsWorld('chineseEight', { silent: true });
+  const still = world.balls.find((b) => b.id === '5');
+  const orientation = [...still.rotation];
+  for (let i = 0; i < 2000; i += 1) world.step(1 / 1000);
+  assert.deepEqual(still.rotation, orientation, 'a ball at rest changed its orientation');
+}
+
+// A ball frozen to a cushion and driven straight into it has not been
+// "driven to a rail" (CBSA §13.2, WPA §2.7): the event says so; once it has
+// left the cushion, coming back counts again.
+{
+  const hit = (gap) => {
+    const world = new PhysicsWorld('chineseEight', { silent: true });
+    const cue = world.getCueBall(), ball = world.getBall('3');
+    world.balls = [cue, ball];
+    ball.pos = { x: 0.3, z: world.table.height / 2 - ball.radius - gap };
+    cue.pos = { x: 0.3, z: ball.pos.z - 0.2 };
+    const events = [];
+    world.onEvent((e) => { if (e.type === 'cushion' && e.ballId === '3') events.push(e); });
+    world.strike({ direction: { x: 0, z: 1 }, speed: 1.2, tipX: 0, tipY: 0, elevation: 2 });
+    for (let i = 0; i < 6000 && world.isMoving(); i += 1) world.step(1 / 1000);
+    return events;
+  };
+  const frozen = hit(0.0001), free = hit(0.05);
+  assert.ok(frozen.length && frozen.every((e) => e.frozen), 'a frozen ball pushed into its cushion must be marked frozen');
+  assert.ok(free.length && free.every((e) => !e.frozen), 'a ball driven to a cushion from the table must not be marked frozen');
+}
+
+// Table markings from the governing bodies: snooker baulk line 737 mm and
+// black spot 324 mm from their cushions, pink midway, reds behind the pink;
+// WPA head string and foot spot on the quarter lines, 9 on the foot spot.
+{
+  const snooker = new PhysicsWorld('snooker', { silent: true });
+  const spots = BilliardsPhysics.snookerSpots(snooker.table), half = snooker.table.width / 2;
+  assert.ok(Math.abs(spots.baulk + half - 0.737) < 1e-9 && Math.abs(half - spots.black.x - 0.324) < 1e-9);
+  assert.ok(Math.abs(spots.pink.x - half / 2) < 1e-9);
+  const cue = snooker.getCueBall();
+  assert.ok(cue.pos.x < spots.baulk && Math.hypot(cue.pos.x - spots.baulk, cue.pos.z) < spots.dRadius, 'snooker cue ball must start in the D');
+  const reds = snooker.balls.filter((b) => b.value === 1);
+  const apexRed = Math.min(...reds.map((b) => b.pos.x));
+  assert.ok(apexRed - spots.pink.x > 2 * cue.radius && apexRed - spots.pink.x < 2 * cue.radius + 0.004, 'apex red must sit just behind the pink');
+  for (const id of ['yellow', 'green', 'brown', 'blue', 'pink', 'black']) {
+    const ball = snooker.getBall(id);
+    assert.ok(Math.hypot(ball.pos.x - spots[id].x, ball.pos.z - spots[id].z) < 1e-9, `${id} is off its spot`);
+  }
+  const nine = new PhysicsWorld('nine', { silent: true });
+  assert.ok(Math.abs(nine.getBall('9').pos.x - nine.table.rackApex) < 0.001 && nine.getBall('1').pos.x < nine.getBall('9').pos.x - 0.09, 'WPA 9-ball: 9 on the foot spot, 1 at the apex');
+  assert.equal(new PhysicsWorld('eight', { silent: true }).table.cueStart, -2.54 / 4);
 }
 
 console.log('CueLab physics smoke tests passed.');

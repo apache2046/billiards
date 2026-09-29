@@ -157,4 +157,65 @@ for (const mode of ['chineseEight', 'eight', 'snooker']) {
   }
 }
 
-console.log(`CueLab pocket regressions passed (${entries} entries, shelf, flight, return, energy, slow motion, geometry).`);
+// A cushion episode must never begin and end without the rubber acting.
+// The old linear rewind (depth / normal speed) overshot on round jaws: a
+// fast ball sliding along an arc was rewound clear of the rubber, released
+// with no force, and tunnelled through the jaw — so hard shots found the
+// pockets bigger than soft ones, and 1× disagreed with slow motion.
+let jawEntries = 0;
+{
+  let seed = 42;
+  const random = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296);
+  let episodes = 0, empty = 0;
+  const watch = (world) => {
+    const finish = world.finishRailContact.bind(world);
+    world.finishRailContact = (target) => {
+      episodes += 1;
+      if (target.railContact && target.railContact.contactTime === 0) empty += 1;
+      return finish(target);
+    };
+  };
+  for (let n = 0; n < 120; n += 1) {
+    const world = new PhysicsWorld('chineseEight', { silent: true });
+    const ball = world.getCueBall(); world.balls = [ball];
+    ball.pos = { x: (random() - 0.5) * 2.44, z: (random() - 0.5) * 1.16 };
+    const angle = random() * Math.PI * 2;
+    world.strike({ direction: { x: Math.cos(angle), z: Math.sin(angle) }, speed: 1 + random() * 5, tipX: 0, tipY: 0, elevation: 0 });
+    watch(world);
+    for (let i = 0; i < 15000 && world.isMoving(); i += 1) world.step(1 / 1000);
+  }
+  assert.ok(episodes > 300, 'random shots barely reached a cushion');
+
+  const attempt = (pocketId, approach, offset, speed, dt) => {
+    const world = new PhysicsWorld('chineseEight', { silent: true });
+    const ball = world.getBall('1'); world.balls = [ball];
+    const pocket = world.table.pockets.find((p) => p.id === pocketId);
+    const a = approach * Math.PI / 180, out = pocket.outward;
+    const dir = { x: out.x * Math.cos(a) - out.z * Math.sin(a), z: out.x * Math.sin(a) + out.z * Math.cos(a) };
+    ball.pos = { x: pocket.throat.x - dir.z * offset - dir.x * 0.3, z: pocket.throat.z + dir.x * offset - dir.z * 0.3 };
+    ball.vel = { x: dir.x * speed, z: dir.z * speed };
+    ball.omega = { x: dir.z * speed / ball.radius, y: 0, z: -dir.x * speed / ball.radius };
+    world.inShot = true;
+    watch(world);
+    // Judge only this entry into this pocket, not a pot elsewhere after a
+    // chaotic tour of the rails.
+    for (let t = 0; t < 0.3 / speed + 0.5 && world.isMoving(); t += dt) world.step(dt);
+    return ball.pocketed && ball.pocketId === pocketId;
+  };
+  const width = (pocketId, approach, speed, dt) => {
+    let potted = 0;
+    for (let k = -40; k <= 40; k += 2) if (attempt(pocketId, approach, k / 1000, speed, dt)) potted += 2;
+    jawEntries += 41;
+    return potted;
+  };
+  for (const [pocketId, approach] of [['tm', 55], ['tm', 45], ['tr', 20]]) {
+    const hard = width(pocketId, approach, 5, 1 / 1000);
+    const slowMotion = width(pocketId, approach, 5, 1 / 20000);
+    const soft = width(pocketId, approach, 0.8, 1 / 1000);
+    assert.ok(Math.abs(hard - slowMotion) <= 4, `${pocketId} ${approach}°: 1× pocket ${hard} mm vs slow motion ${slowMotion} mm`);
+    assert.ok(hard <= soft + 12, `${pocketId} ${approach}°: a hard ball finds a ${hard} mm pocket, a soft one ${soft} mm`);
+  }
+  assert.equal(empty, 0, `${empty} of ${episodes} cushion episodes ended before any force acted`);
+}
+
+console.log(`CueLab pocket regressions passed (${entries} entries, ${jawEntries} jaw entries, shelf, flight, return, energy, slow motion, geometry).`);

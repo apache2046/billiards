@@ -73,7 +73,7 @@ for (const jaw of table.jaws) {
 assert.ok(table.cornerReturnAngle > Math.PI / 4 && table.cornerReturnAngle < Math.PI / 3);
 near(table.sideReturnAngle, Math.PI / 2, 'middle quarter arc');
 near(Math.SQRT2 * (table.cornerGap + table.jawRadius) - 2 * table.jawRadius, 0.085, 'corner throat width preserved');
-near(2 * (table.sideGap - table.sideJawRadius), 0.100, 'middle throat width preserved');
+near(2 * (table.sideGap - table.sideJawRadius), 0.086, 'middle throat width preserved');
 assert.ok(table.sideJawRadius > table.jawRadius * 1.7, 'middle shoulder is still a short circular corner');
 // An ellipse's closest-point normal is not a radial vector. Check the ball
 // offset on both sides of the true contact boundary, including tight turns.

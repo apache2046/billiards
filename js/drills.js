@@ -23,15 +23,18 @@
         spin: { x: -0.45, y: 0 }, power: 0.48, elevation: 3,
         hint: '当前是左塞顺塞。击打一杆后撤销，只改成右塞再打；对照首库入/出角和让点读数。',
       }),
+      // A cue ball only comes back to a rail it has just left while it still
+      // carries excess topspin, i.e. within a few centimetres of the object
+      // ball: the 1 sits 4 cm off the rail beside the middle pocket.
       follow: () => ({
-        ...cutShot({ x: 1.18, z: 0.57 }, table.pockets.find(p => p.id === 'tr'), -10, 0.10),
-        spin: { x: 0, y: 0.60 }, power: 0.80, elevation: 3,
-        hint: '先厚切 1 号球入角袋，再看母球碰短库、离库和回吸。首库显示前旋状态，实际回到同一库边才标为「回吸同库」。',
+        ...cutShot({ x: -0.04, z: table.height / 2 - R - 0.04 }, table.pockets.find(p => p.id === 'tm'), 15, 0.40),
+        spin: { x: 0, y: 0.65 }, power: 0.90, elevation: 3,
+        hint: '1 号球离库只有 4 cm：90% 力度大高杆切进中袋，母球带着多余前旋顶库、弹出十来厘米后被拉回同一库边。撤销后减小力度或高杆，看回吸何时消失。',
       }),
       draw: () => ({
         ...cutShot({ x: 0.80, z: -0.35 }, table.pockets.find(p => p.id === 'br'), 5, 1.80),
-        spin: { x: 0, y: -0.65 }, power: 0.80, elevation: 3,
-        hint: '1.8 米长台、80% 力度、深低杆。观察进球后的回拉碰库；撤销后改为 62%，比较途中后旋的损失。',
+        spin: { x: 0, y: -0.65 }, power: 0.95, elevation: 3,
+        hint: '1.8 米长台、95% 力度、深低杆。偏心击球要分一部分出杆能量给旋转，长台回拉需要接近全力；撤销后改为 80%，比较途中后旋的损失。',
       }),
       gear: () => ({
         cue: { x: -2 * R * Math.cos(Math.PI / 6) - 0.08, z: -R }, target: { x: 0, z: 0 },
@@ -40,8 +43,8 @@
       }),
       masse: () => ({
         cue: { x: -0.45, z: -0.18 }, target: { x: -0.15, z: -0.18 }, aim: { x: 1, z: 0 },
-        spin: { x: 0.40, y: -0.55 }, power: 0.30, elevation: 60,
-        hint: '轻力抬杆，让母球向侧面弯开障碍球。空中不受台呢摩擦，落地后继续回弯；起跳幅度是近似模型，尚非实台器材标定。',
+        spin: { x: 0.40, y: -0.50 }, power: 0.45, elevation: 60,
+        hint: '中等力度抬杆 60°，让母球向侧面弯开障碍球。空中不受台呢摩擦，落地后继续回弯；起跳幅度是近似模型，尚非实台器材标定。',
       }),
     };
     const id = Object.hasOwn(setups, kind) ? kind : 'english';

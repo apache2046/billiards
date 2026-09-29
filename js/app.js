@@ -3,7 +3,7 @@
 
   const { PhysicsWorld, POOL_COLORS, PALLADIUM_COLORS } = window.BilliardsPhysics;
   const { BilliardsRenderer } = window.BilliardsRenderer;
-  const { V2, clamp } = window.BilliardsMath;
+  const { V2, clamp, smoothstep } = window.BilliardsMath;
   const { createDrill } = window.BilliardsDrills;
 
   const BALL_SKINS = {
@@ -176,7 +176,13 @@
         return;
       }
 
-      this.world = new PhysicsWorld('chineseEight', { cueType: 'small', tipType: 'medium' });
+      // Every rack gets a fresh seed for its small disorder, so breaks vary
+      // like real racks do.  A shared replay link (?shoot=1) or an explicit
+      // ?rack=<seed> pins the seed so the same link replays the same break.
+      const startup = new URLSearchParams(window.location.search);
+      const rackParam = Number.parseInt(startup.get('rack'), 10);
+      this.fixedRackSeed = Number.isFinite(rackParam) ? rackParam : startup.get('shoot') === '1' ? 1 : null;
+      this.world = new PhysicsWorld('chineseEight', { cueType: 'small', tipType: 'medium', rackSeed: this.nextRackSeed() });
       this.renderer.setTable(this.world.table);
       this.sound = new SoundEngine();
       this.aimDirection = { x: 1, z: 0 };
@@ -192,6 +198,7 @@
       this.lastRightUp = 0;
       this.placement = false;
       this.placementDrag = null;
+      this.strokeCache = null;
       this.ballSkin = 'tv';
       this.pullback = 0;
       this.paused = false;
@@ -230,6 +237,9 @@
       this.world.onEvent((event) => this.handlePhysicsEvent(event));
       this.updateAllUI();
       this.applyStartupParams();
+      // A seed from the link (?rack= or ?shoot=1) pins the rack(s) the link
+      // itself sets up; racks the player asks for afterwards vary again.
+      this.fixedRackSeed = null;
       this.updateToggleButtons();
       this.schedulePrediction(true);
       requestAnimationFrame((time) => this.frame(time));
@@ -301,11 +311,16 @@
     }
 
     emptyShotRecord() {
-      return { firstContact: null, potted: [], lowestAtStart: null, expectedAtStart: null,
-        cueRail: null, returnedCueRail: null };
+      return { firstContact: null, potted: [], offTable: [], railAfterContact: false, railBalls: [],
+        lowestAtStart: null, expectedAtStart: null, cueRail: null, returnedCueRail: null };
+    }
+
+    nextRackSeed() {
+      return this.fixedRackSeed ?? ((Math.random() * 4294967296) >>> 0 || 1);
     }
 
     createRuleState(mode) {
+      const pool = mode === 'chineseEight' || mode === 'eight' || mode === 'nine';
       return {
         mode,
         currentPlayer: 0,
@@ -313,6 +328,14 @@
         groups: [null, null],
         winner: null,
         snookerExpected: 'red',
+        // The break is played with the cue ball in hand behind the head
+        // string (CBSA §2.4: 开球线后).  After a foul the incoming player gets
+        // ball in hand anywhere on the table (§22) — 'table'.
+        breakShot: mode === 'chineseEight' || mode === 'eight',
+        ballInHand: pool ? 'kitchen' : null,
+        // An illegal break hands the opponent a decision (§5.2).
+        pendingChoice: null,
+        breakWarning: null,
       };
     }
 
@@ -461,6 +484,7 @@
           this.renderer = new BilliardsRenderer(this.glCanvas);
           this.renderer.setTable(this.world.table);
           this.renderer.setBallStyle(this.ballSkin);
+          this.renderer.tableTheme = old.tableTheme;
           this.renderer.cameraMode = old.cameraMode;
           this.renderer.zoom = old.zoom;
           this.renderer.orbit = old.orbit ? { ...old.orbit } : null;
@@ -474,6 +498,7 @@
       });
 
       $('#placementToggle').addEventListener('click', () => this.togglePlacement());
+      $$('#ruleChoice [data-choice]').forEach((button) => button.addEventListener('click', () => this.applyRuleChoice(button.dataset.choice)));
       $('#trayClear').addEventListener('click', () => this.clearTableToTray());
       $('#ballSkin').addEventListener('change', (event) => this.setBallSkin(event.target.value));
 
@@ -566,6 +591,7 @@
       }
       this.sound.ensure();
       if (this.placement) { this.beginPlacementDrag(event); return; }
+      if (this.rule.ballInHand && this.beginCueInHandDrag(event)) return;
       this.updateAimFromPointer(event);
       this.drag = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, moved: 0 };
       this.glCanvas.setPointerCapture(event.pointerId);
@@ -715,6 +741,7 @@
 
     togglePlacement() {
       if (!this.placement && this.world.isMoving()) { this.toast('请等球静止后再进入摆球模式'); return; }
+      if (!this.placement && this.rule.pendingChoice) { this.toast('请先选择非法开球的处理方式'); return; }
       this.placement = !this.placement;
       this.placementDrag = null;
       this.stage.classList.remove('grabbing');
@@ -729,18 +756,21 @@
         this.actualTrails.clear();
         this.renderBallTray();
         $('#statusEyebrow').textContent = 'LAYOUT · 摆球模式';
-        $('#statusText').textContent = '左键拖球摆位;拖入袋口收进托盘;点托盘放回';
-        this.toast('摆球模式:自由拖动母球与彩球;再按 B 或按钮完成布局');
+        $('#statusText').textContent = '左键拖球摆位；拖入袋口收进托盘；点托盘放回';
+        this.toast('摆球模式：自由拖动母球与彩球；再按 B 或按钮完成布局');
       } else {
         // The rearranged table is no longer the drill's fixed layout: keep the
         // drill marked active and every shot would still settle through the
         // drill branch, never scoring or passing the turn.
         this.clearDrillSelection();
         this.rule = this.createRuleState(this.world.mode);
+        // A hand-made layout is practice, not a rack: no break is owed and
+        // the cue ball stays exactly where it was placed.
+        this.rule.breakShot = false; this.rule.ballInHand = null;
         this.shotRecord = this.emptyShotRecord();
         this.updateAllUI();
         this.schedulePrediction(true);
-        this.toast('布局完成,规则状态已重置,开始练习');
+        this.toast('布局完成，规则状态已重置，开始练习');
       }
     }
 
@@ -778,7 +808,7 @@
     }
 
     sendToTray(ball) {
-      ball.pocketed = true; ball.pocketId = 'tray';
+      ball.pocketed = true; ball.offTable = false; ball.pocketId = 'tray';
       ball.sinkTime = 1; ball.sinkDepth = ball.radius * 3.2; ball.sinkTarget = null;
       ball.vel = { x: 0, z: 0 }; ball.omega = { x: 0, y: 0, z: 0 };
       ball.state = 'pocketed';
@@ -804,7 +834,7 @@
         if (ball.id !== 'cue' && !ball.pocketed) this.sendToTray(ball);
       });
       this.renderBallTray();
-      this.toast('台面已清空,母球保留;点托盘中的球放回');
+      this.toast('台面已清空，母球保留；点托盘中的球放回');
     }
 
     beginPlacementDrag(event) {
@@ -821,8 +851,31 @@
       this.stage.classList.add('grabbing');
     }
 
+    // Ball in hand (自由球): pressing on the cue ball picks it up; pressing
+    // anywhere else still aims and strokes as usual.
+    beginCueInHandDrag(event) {
+      const cue = this.world.getCueBall();
+      if (!cue || cue.pocketed) return false;
+      const point = this.renderer.screenToTable(event.clientX, event.clientY, cue.radius);
+      const near = point && Math.hypot(point.x - cue.pos.x, point.z - cue.pos.z) <= cue.radius * 2.2;
+      // On a phone the ball is only a few pixels across: also accept a
+      // finger-sized screen distance, so a near miss picks the ball up
+      // instead of turning into a stroke.
+      const centre = this.renderer.project({ x: cue.pos.x, y: cue.radius, z: cue.pos.z });
+      const rect = this.glCanvas.getBoundingClientRect();
+      const slop = event.pointerType === 'touch' ? 28 : 12;
+      const onScreen = centre && Math.hypot(event.clientX - rect.left - centre.x, event.clientY - rect.top - centre.y) <= slop;
+      if (!near && !onScreen) return false;
+      this.placementDrag = { ball: cue, pointerId: event.pointerId, overPocket: null, inHand: true };
+      this.glCanvas.setPointerCapture(event.pointerId);
+      this.stage.classList.add('grabbing');
+      return true;
+    }
+
     movePlacementBall(event) {
       const drag = this.placementDrag;
+      // A held ball can never be dragged out of a live shot.
+      if (this.world.isMoving()) { this.endPlacementDrag(true); return; }
       const ball = drag.ball;
       const point = this.renderer.screenToTable(event.clientX, event.clientY, ball.radius);
       if (!point) return;
@@ -830,7 +883,9 @@
       drag.overPocket = ball.id !== 'cue'
         ? t.pockets.find((p) => Math.hypot(point.x - p.x, point.z - p.z) < 0.075) || null
         : null;
-      const x = clamp(point.x, -t.width / 2 + R, t.width / 2 - R);
+      // After a break foul the cue ball goes behind the head string only.
+      const kitchen = drag.inHand && this.rule.ballInHand === 'kitchen';
+      const x = clamp(point.x, -t.width / 2 + R, kitchen ? t.cueStart : t.width / 2 - R);
       const z = clamp(point.z, -t.height / 2 + R, t.height / 2 - R);
       const clear = this.world.balls.every((other) => other === ball || other.pocketed
         || Math.hypot(other.pos.x - x, other.pos.z - z) > R + other.radius + 0.0004);
@@ -838,6 +893,7 @@
       ball.vel.x = 0; ball.vel.z = 0;
       ball.omega = { x: 0, y: 0, z: 0 };
       ball.state = 'stationary';
+      if (drag.inHand) this.schedulePrediction();
     }
 
     endPlacementDrag(cancelled) {
@@ -845,6 +901,7 @@
       this.placementDrag = null;
       this.stage.classList.remove('grabbing');
       if (!drag || cancelled) return;
+      if (drag.inHand) { this.schedulePrediction(true); return; }
       if (drag.overPocket && drag.ball.id !== 'cue') {
         this.sendToTray(drag.ball);
         this.renderBallTray();
@@ -852,44 +909,123 @@
       }
     }
 
-    speedFromPower() { return 0.18 + 6.15 * Math.pow(this.power, 1.34); }
+    // Up to ~80 % the slider keeps its established feel; the last fifth is
+    // the break zone.  A real power break sends the cue ball at 8–11 m/s,
+    // while the old curve topped out near 6 m/s and could not open a rack.
+    speedFromPower() {
+      const breakZone = smoothstep(0.8, 1, this.power);
+      return 0.18 + 6.15 * Math.pow(this.power, 1.34) + 3.15 * breakZone * breakZone;
+    }
 
-    // A real stick cannot stroke level through the rail: with the butt over
-    // a cushion, the rail cap (≈30 mm above ball centre) forces a minimum
-    // elevation that grows as the cue ball nears the rail it points away
-    // from.  Draw, predict and strike all share this floor so the rendered
-    // cue never dives through the rail and the picture matches the physics.
-    railClearanceElevation() {
+    // The stick is a solid tapered rod: it has to pass over the cushion, the
+    // rail cap and any ball lying behind the cue ball.  Find the lowest
+    // elevation (at least the player's own, and at most 45° — a raised
+    // bridge on the rail) at which the whole stick clears.  A ball frozen to
+    // or tucked under the cushion cannot be struck low at all, because the
+    // tip would have to pass through the rubber; the contact is then lifted
+    // to the lowest point the stick can actually reach.  Draw, predict and
+    // strike all share this geometry, so the rendered cue never dives through
+    // the rail and the picture matches the physics.
+    strokeGeometry() {
       const cue = this.world.getCueBall();
-      if (!cue || cue.pocketed) return 0;
-      const t = this.world.table;
-      const back = { x: -this.aimDirection.x, z: -this.aimDirection.z };
-      let distance = Infinity;
-      if (back.x > 1e-6) distance = Math.min(distance, (t.width / 2 - cue.pos.x) / back.x);
-      if (back.x < -1e-6) distance = Math.min(distance, (-t.width / 2 - cue.pos.x) / back.x);
-      if (back.z > 1e-6) distance = Math.min(distance, (t.height / 2 - cue.pos.z) / back.z);
-      if (back.z < -1e-6) distance = Math.min(distance, (-t.height / 2 - cue.pos.z) / back.z);
-      if (!Number.isFinite(distance) || distance > 1.45) return 0;
-      const rise = 0.034; // rail cap over ball centre plus a stroke margin
-      return Math.min(45, Math.atan2(rise, Math.max(0.02, distance + 0.05)) * 180 / Math.PI);
+      const base = { elevation: clamp(this.elevation, 0, 60), tipX: this.tipX, tipY: this.tipY,
+        raised: false, liftedTip: false, blocked: false };
+      if (!cue || cue.pocketed) return base;
+      const key = [cue.pos.x, cue.pos.z, this.aimDirection.x, this.aimDirection.z, this.elevation, this.tipX, this.tipY,
+        this.world.cueType, this.world.mode, ...this.world.balls.flatMap((b) => (b.pocketed ? [] : [b.pos.x, b.pos.z]))].join('|');
+      if (this.strokeCache?.key === key) return this.strokeCache.value;
+      const value = this.solveStroke(cue, base);
+      this.strokeCache = { key, value };
+      return value;
+    }
+
+    solveStroke(cue, base) {
+      const ceiling = Math.max(45, base.elevation);
+      const lowestClear = (tipY) => {
+        if (this.cueClears(cue, base.elevation, base.tipX, tipY)) return base.elevation;
+        let clearAt = null;
+        for (let e = Math.floor(base.elevation * 2 + 1) / 2; e <= ceiling + 1e-9; e += 0.5) {
+          if (this.cueClears(cue, e, base.tipX, tipY)) { clearAt = e; break; }
+        }
+        if (clearAt == null) return null;
+        let low = Math.max(base.elevation, clearAt - 0.5), high = clearAt;
+        for (let i = 0; i < 6; i += 1) {
+          const mid = (low + high) / 2;
+          if (this.cueClears(cue, mid, base.tipX, tipY)) high = mid; else low = mid;
+        }
+        return high;
+      };
+      const elevation = lowestClear(base.tipY);
+      if (elevation != null) return { ...base, elevation, raised: elevation > base.elevation + 1e-6 };
+      for (let tipY = base.tipY + 0.02; tipY <= 0.9 + 1e-9; tipY += 0.02) {
+        const lifted = lowestClear(tipY);
+        if (lifted != null) return { ...base, tipY, elevation: lifted, raised: lifted > base.elevation + 1e-6, liftedTip: true };
+      }
+      return { ...base, elevation: ceiling, raised: ceiling > base.elevation, blocked: true };
+    }
+
+    // Whether the stick, drawn exactly as the renderer draws it, stays clear
+    // of the cushion/rail profile and of every other ball.
+    cueClears(cue, elevationDegrees, tipX, tipY) {
+      const t = this.world.table, R = cue.radius, d = this.aimDirection;
+      const tipR = this.world.getCueSpec().tipDiameter / 2;
+      const el = elevationDegrees * Math.PI / 180, c = Math.cos(el), s = Math.sin(el);
+      const reach = 0.82 * R, offset = Math.hypot(tipX, tipY) * 0.82;
+      const depth = R * Math.sqrt(Math.max(0.2, 1 - offset * offset));
+      const px = cue.pos.x - d.z * tipX * reach + d.x * s * tipY * reach - d.x * c * depth;
+      const pz = cue.pos.z + d.x * tipX * reach + d.z * s * tipY * reach - d.z * c * depth;
+      const py = R + c * tipY * reach + s * depth;
+      // Stick radius from the tip back: tip, ferrule, tapered shaft, butt.
+      const radius = (u) => (u < 0.0125 ? tipR : u < 0.0325 ? tipR * 1.02
+        : u < 0.7325 ? tipR * (1.05 + (u - 0.0325) / 0.7 * 0.9975)
+          : tipR * (2.0475 + Math.min(1, (u - 0.7435) / 0.6) * 0.86));
+      const margin = 0.0005, length = 1.35;
+      const nose = t.cushionContactHeight || 0.037, top = t.cushionTopHeight || 0.042, railTop = top + 0.017;
+      const chinese = t.style === 'chinese';
+      const ramp = chinese ? 0.0035 : 0.006;
+      const obstacle = (beyond) => {
+        if (beyond < 0) return 0;
+        if (beyond < ramp) return nose + (top - nose) * beyond / ramp;
+        if (beyond < 0.056) return chinese ? top + 0.014 * (beyond - 0.0035) / (0.058 - 0.0035) : top;
+        return railTop;
+      };
+      for (let u = 0.005; u <= length; u += 0.003) {
+        const x = px - d.x * c * u, z = pz - d.z * c * u, y = py + s * u;
+        const beyond = Math.max(Math.abs(x) - t.width / 2, Math.abs(z) - t.height / 2);
+        if (beyond > t.railWidth) break;
+        if (y - radius(u) / c < obstacle(beyond) + margin) return false;
+      }
+      // Other balls: shortest distance from each centre to the stick's axis.
+      const ax = -d.x * c, ay = s, az = -d.z * c;
+      for (const ball of this.world.balls) {
+        if (ball === cue || ball.pocketed) continue;
+        const bx = ball.pos.x - px, by = ball.radius + (ball.posY || 0) - py, bz = ball.pos.z - pz;
+        const u = clamp(bx * ax + by * ay + bz * az, 0.005, length);
+        const gap = Math.hypot(bx - ax * u, by - ay * u, bz - az * u);
+        if (gap < ball.radius + radius(u) + margin) return false;
+      }
+      return true;
     }
 
     effectiveElevation() {
-      return clamp(Math.max(this.elevation, this.railClearanceElevation()), 0, 60);
+      return this.strokeGeometry().elevation;
     }
 
     shotOptions() {
+      const stroke = this.strokeGeometry();
       return {
         direction: { ...this.aimDirection }, speed: this.speedFromPower(),
-        tipX: this.tipX, tipY: this.tipY, elevation: this.effectiveElevation(),
+        tipX: stroke.tipX, tipY: stroke.tipY, elevation: stroke.elevation,
         cueType: this.world.cueType, tipType: this.world.tipType,
       };
     }
 
     shoot() {
       if (!this.renderer || this.paused || this.world.isMoving()) return;
-      if (this.placement) { this.toast('摆球模式中;按 B 或按钮完成布局后再击球'); return; }
-      if (this.rule.winner != null) { this.toast(`本局已结束，${this.rule.winner + 1} 号选手获胜；重新摆球可开始下一局`); return; }
+      if (this.placement) { this.toast('摆球模式中；按 B 或按钮完成布局后再击球'); return; }
+      if (this.placementDrag) { this.toast('先松开母球完成摆放，再击球'); return; }
+      if (this.rule.winner != null) { this.toast(`本局已结束，P${this.rule.winner + 1} 获胜；重新摆球可开始下一局`); return; }
+      if (this.rule.pendingChoice) { this.toast('请先选择非法开球的处理方式'); return; }
       const cue = this.world.getCueBall();
       if (!cue || cue.pocketed) { this.world.respotCue(); this.schedulePrediction(true); return; }
       this.sound.ensure();
@@ -911,6 +1047,7 @@
       if (!success) this.undoStack.pop();
       else {
         this.prediction = null;
+        this.rule.ballInHand = null;
         $('#statusText').textContent = '观察旋转、碰撞与走位';
       }
     }
@@ -920,7 +1057,7 @@
       if (event.type === 'cue') {
         if (event.miscue) {
           this.sound.click('miscue', clamp(event.speed / 4, 0.3, 1), pan);
-          this.toast('疵杆!击点超出皮头摩擦极限,动量与旋转大量损失');
+          this.toast('疵杆！击点超出皮头摩擦极限，动量与旋转大量损失');
         } else {
           this.sound.click('cue', clamp(event.speed / 6, 0.15, 1), pan);
         }
@@ -934,8 +1071,18 @@
       } else if (event.type === 'cushion') {
         this.sound.click('rail', clamp(event.speed / 4, 0.08, 0.85), pan);
         this.addEffect(event.position, 'rail', event.speed);
+        // CBSA §9.2 counts cushion contacts made after the cue ball has
+        // touched an object ball; §5.1 counts object balls reaching a cushion.
+        // A ball frozen to that cushion only counts once it has left it and
+        // come back (CBSA §13.2, WPA §2.7).
+        if (!event.frozen) {
+          if (this.shotRecord.firstContact) this.shotRecord.railAfterContact = true;
+          if (event.ballId !== 'cue' && !this.shotRecord.railBalls.includes(event.ballId)) this.shotRecord.railBalls.push(event.ballId);
+        }
         if (event.ballId === 'cue') {
-          this.shotRecord.cueRail = event;
+          // Keep the FIRST cue-ball rail: that is what the prediction's
+          // “首库效应” reads and what the English drills compare.
+          if (!this.shotRecord.cueRail) this.shotRecord.cueRail = event;
           if (event.returned) this.shotRecord.returnedCueRail = event;
           $('#statusText').textContent = `${this.railEffectLabel(event)} · 入 ${event.incidentAngle.toFixed(1)}° → 出 ${event.reboundAngle.toFixed(1)}° · 胶边压缩 ${(event.compression * 1000).toFixed(1)} mm`;
         }
@@ -943,6 +1090,13 @@
         this.sound.click('pocket', clamp(event.speed / 3, 0.2, 1), pan);
         this.addEffect(event.position, 'pocket', event.speed);
         this.shotRecord.potted.push(event.ballId);
+      } else if (event.type === 'offTable') {
+        // A ball that leaves the table has necessarily crossed a cushion.
+        this.sound.click('rail', 0.5, pan);
+        this.shotRecord.offTable.push(event.ballId);
+        if (this.shotRecord.firstContact) this.shotRecord.railAfterContact = true;
+        const ball = this.world.getBall(event.ballId);
+        this.toast(`${event.ballId === 'cue' ? '母球' : ball?.number != null ? `${ball.number} 号球` : ball?.label || event.ballId}飞出台面`);
       } else if (event.type === 'settled') {
         this.pendingSettle = true;
       }
@@ -963,19 +1117,19 @@
 
     evaluateRules() {
       const mode = this.world.mode;
-      const cueFoul = this.shotRecord.potted.includes('cue');
+      const cueFoul = this.shotRecord.potted.includes('cue') || this.shotRecord.offTable.includes('cue');
       if (this.activeDrill) {
         if (cueFoul) this.world.respotCue();
-        const rail = this.shotRecord.returnedCueRail || this.shotRecord.cueRail;
+        const returned = this.shotRecord.returnedCueRail, rail = returned || this.shotRecord.cueRail;
         this.toast(rail
-          ? `${this.railEffectLabel(rail)}：入射 ${rail.incidentAngle.toFixed(1)}°，反弹 ${rail.reboundAngle.toFixed(1)}°，胶边压缩 ${(rail.compression * 1000).toFixed(1)} mm`
+          ? `${returned ? '' : '首库 · '}${this.railEffectLabel(rail)}：入射 ${rail.incidentAngle.toFixed(1)}°，反弹 ${rail.reboundAngle.toFixed(1)}°，胶边压缩 ${(rail.compression * 1000).toFixed(1)} mm`
           : '实验完成；点击同一场景可复位后做对照');
         return;
       }
       if (mode === 'practice') {
         const objectPots = this.shotRecord.potted.filter((id) => id !== 'cue').length;
         this.rule.scores[0] += objectPots;
-        if (cueFoul) { this.world.respotCue(); this.toast('母球落袋，已自动复位'); }
+        if (cueFoul) { this.world.respotCue(); this.toast(this.shotRecord.offTable.includes('cue') ? '母球飞出台面，已自动复位' : '母球落袋，已自动复位'); }
         else if (objectPots) this.toast(`进球 ${objectPots} 颗 · 可以继续练习`);
         return;
       }
@@ -984,42 +1138,104 @@
       else this.evaluateSnooker(cueFoul);
     }
 
+    // Chinese eight-ball follows the CBSA 《中式台球竞赛总则》(2017); the
+    // American game shares the same skeleton and differs where WPA does
+    // (group choice on an open table).
     evaluateEightBall(cueFoul) {
+      const chinese = this.world.mode === 'chineseEight';
+      const record = this.shotRecord;
       const player = this.rule.currentPlayer, opponent = 1 - player;
-      const first = this.world.getBall(this.shotRecord.firstContact);
+      const breakShot = Boolean(this.rule.breakShot);
+      this.rule.breakShot = false;
+      const first = this.world.getBall(record.firstContact);
       const group = this.rule.groups[player];
       // The 8 is racked with kind 'solid' for rendering; it must never count
       // as one of the solids player's own balls, or that player could neither
       // clear their group nor be fouled for striking the 8 early.
-      const ownRemainingBefore = group ? this.undoStack.at(-1).world.balls.filter((b) => !b.pocketed && b.kind === group && b.number !== 8).length : null;
-      const expectedEight = group && ownRemainingBefore === 0;
-      let foul = cueFoul || !first;
-      if (first) {
-        if (group) foul ||= expectedEight ? first.number !== 8 : (first.number === 8 || first.kind !== group);
-        else foul ||= first.number === 8;
+      const before = this.undoStack.at(-1)?.world.balls || this.world.balls;
+      const ownRemainingBefore = group ? before.filter((b) => !b.pocketed && b.kind === group && b.number !== 8).length : null;
+      const expectedEight = Boolean(group) && ownRemainingBefore === 0;
+      const objectPots = record.potted.filter((id) => id !== 'cue').map((id) => this.world.getBall(id)).filter(Boolean);
+      const objectsOff = record.offTable.filter((id) => id !== 'cue');
+      const eightDown = record.potted.includes('8'), eightOff = record.offTable.includes('8');
+      const reasons = [];
+      if (record.potted.includes('cue')) reasons.push('母球落袋');
+      if (record.offTable.includes('cue')) reasons.push('母球飞出台面');
+      if (!first) reasons.push('母球未碰到目标球');
+      if (objectsOff.length) reasons.push('目标球飞出台面');
+      if (first && !breakShot) {
+        if (group && expectedEight && first.number !== 8) reasons.push('应先碰 8 号球');
+        else if (group && !expectedEight && (first.number === 8 || first.kind !== group)) reasons.push(first.number === 8 ? '提前先碰 8 号球' : '先碰了对方球组');
+        else if (!group && first.number === 8) reasons.push('开放球局先碰 8 号球');
+        // §9.2: with nothing potted, some ball (the cue ball included) must
+        // reach a cushion after the first contact.
+        if (!objectPots.length && !record.railAfterContact) reasons.push('击球后没有球碰库');
       }
-      const eightPotted = this.shotRecord.potted.includes('8');
-      if (eightPotted) {
-        const legalWin = !foul && expectedEight;
-        this.rule.winner = legalWin ? player : opponent;
-        this.toast(legalWin ? `漂亮！P${player + 1} 合法打进 8 号球` : `8 号球提前或犯规落袋，P${opponent + 1} 获胜`);
+      const foul = reasons.length > 0;
+
+      if (breakShot) {
+        // §5.4: an 8 potted (or jumped) on the break is spotted, never a loss.
+        if (eightDown || eightOff) this.world.respotBall('8', { x: this.world.table.rackApex, z: 0 });
+        const spotted = eightDown || eightOff ? '，8 号球已放回置球点' : '';
+        if (foul) {
+          // §5.3/§5.5: a break foul gives the opponent the cue ball in hand
+          // behind the head string.
+          this.world.respotCue();
+          this.rule.currentPlayer = opponent;
+          this.rule.ballInHand = 'kitchen';
+          this.toast(`开球犯规（${reasons.join('、')}），P${opponent + 1} 开球线后自由球${spotted}`);
+          return;
+        }
+        if (!objectPots.length && record.railBalls.length < 4) {
+          if (this.rule.breakWarning === player) {
+            this.rule.winner = opponent;
+            this.toast(`P${player + 1} 再次开球不合法，判负本局`);
+            return;
+          }
+          this.rule.pendingChoice = { kind: 'illegalBreak', chooser: opponent, breaker: player };
+          this.toast(`非法开球：只有 ${record.railBalls.length} 颗目标球碰库，请 P${opponent + 1} 选择处理方式`);
+          return;
+        }
+        this.rule.breakWarning = null;
+        if (objectPots.length) this.toast(`开球进球，P${player + 1} 继续击球 · 球局仍开放${spotted}`);
+        else { this.rule.currentPlayer = opponent; this.toast(`合法开球，${record.railBalls.length} 颗目标球碰库 · 轮到 P${opponent + 1}`); }
         return;
       }
-      const objectPots = this.shotRecord.potted.filter((id) => id !== 'cue' && id !== '8').map((id) => this.world.getBall(id)).filter(Boolean);
+
+      if (eightDown || eightOff) {
+        const legalWin = eightDown && !foul && expectedEight;
+        this.rule.winner = legalWin ? player : opponent;
+        this.toast(legalWin ? `漂亮！P${player + 1} 合法打进 8 号球` : eightOff ? `8 号球飞出台面，P${opponent + 1} 获胜`
+          : `8 号球提前或犯规落袋，P${opponent + 1} 获胜`);
+        return;
+      }
+      const groupPots = objectPots.filter((ball) => ball.number !== 8);
       if (!this.rule.groups[0] && !foul) {
-        const assigned = objectPots.find((ball) => ball.kind === 'solid' || ball.kind === 'stripe');
+        // CBSA §7.2/§7.5: the table stays open until a player pots a ball of
+        // the group he struck first.  WPA lets any legally potted ball decide.
+        const assigned = chinese
+          ? (groupPots.some((ball) => ball.kind === first.kind) ? first : null)
+          : groupPots.find((ball) => ball.kind === 'solid' || ball.kind === 'stripe');
         if (assigned) {
           this.rule.groups[player] = assigned.kind;
           this.rule.groups[opponent] = assigned.kind === 'solid' ? 'stripe' : 'solid';
           this.toast(`P${player + 1} 分组：${assigned.kind === 'solid' ? '全色球' : '花色球'}`);
         }
       }
-      const legalPots = objectPots.filter((ball) => !this.rule.groups[player] || ball.kind === this.rule.groups[player]).length;
+      const ownGroup = this.rule.groups[player];
+      const legalPots = ownGroup ? groupPots.filter((ball) => ball.kind === ownGroup).length
+        : chinese ? 0 : groupPots.length;
       this.rule.scores[player] += legalPots;
       if (foul) {
-        this.world.respotCue(); this.rule.currentPlayer = opponent; this.toast(`P${player + 1} 犯规，交换球权`);
+        // §22: ball in hand anywhere.  An unpocketed cue ball stays where it
+        // stopped; the incoming player may pick it up and place it.
+        if (record.potted.includes('cue') || record.offTable.includes('cue')) this.world.respotCue();
+        this.rule.currentPlayer = opponent;
+        this.rule.ballInHand = 'table';
+        this.toast(`P${player + 1} 犯规（${reasons.join('、')}），P${opponent + 1} 获得自由球`);
       } else if (!legalPots) {
         this.rule.currentPlayer = opponent;
+        if (!ownGroup && groupPots.length && chinese) this.toast('先碰的球组没有进球，球局仍开放，交换球权');
       }
     }
 
@@ -1031,29 +1247,33 @@
     evaluateNineBall(cueFoul) {
       const player = this.rule.currentPlayer, opponent = 1 - player;
       const first = this.world.getBall(this.shotRecord.firstContact);
-      const foul = cueFoul || !first || first.number !== this.shotRecord.lowestAtStart;
+      const objectsOff = this.shotRecord.offTable.filter((id) => id !== 'cue');
+      const foul = cueFoul || !first || first.number !== this.shotRecord.lowestAtStart || objectsOff.length > 0;
       const ninePotted = this.shotRecord.potted.includes('9');
       if (ninePotted && !foul) {
         this.rule.scores[player] += 1; this.rule.winner = player; this.toast(`P${player + 1} 合法打进 9 号球，赢得本局`); return;
       }
-      if (ninePotted && foul) this.world.respotBall('9', { x: 0.63, z: 0 });
+      // A 9 pocketed on a foul or jumped off the table is spotted.
+      if ((ninePotted && foul) || objectsOff.includes('9')) this.world.respotBall('9', { x: this.world.table.rackApex, z: 0 });
       const legalPots = this.shotRecord.potted.filter((id) => id !== 'cue').length;
       this.rule.scores[player] += foul ? 0 : legalPots;
       if (foul) {
-        this.world.respotCue(); this.rule.currentPlayer = opponent;
+        // Ball in hand anywhere; a cue ball still on the cloth stays put.
+        if (cueFoul) this.world.respotCue();
+        this.rule.currentPlayer = opponent;
+        this.rule.ballInHand = 'table';
         const wrongFirst = first && first.number !== this.shotRecord.lowestAtStart;
-        this.toast(wrongFirst ? `犯规：应先接触 ${this.shotRecord.lowestAtStart} 号球`
-          : cueFoul ? '犯规：母球落袋' : '犯规：母球未接触任何球');
+        const reason = wrongFirst ? `应先碰 ${this.shotRecord.lowestAtStart} 号球`
+          : this.shotRecord.offTable.includes('cue') ? '母球飞出台面' : cueFoul ? '母球落袋'
+            : objectsOff.length ? '目标球飞出台面' : '母球未碰到目标球';
+        this.toast(`犯规：${reason}，P${opponent + 1} 获得自由球`);
       } else if (!legalPots) this.rule.currentPlayer = opponent;
     }
 
     snookerColorOrder() { return ['yellow', 'green', 'brown', 'blue', 'pink', 'black']; }
 
     snookerSpot(id) {
-      return {
-        yellow: { x: -0.89, z: 0.292 }, green: { x: -0.89, z: -0.292 }, brown: { x: -0.89, z: 0 },
-        blue: { x: 0, z: 0 }, pink: { x: 0.89, z: 0 }, black: { x: 1.43, z: 0 },
-      }[id];
+      return BilliardsPhysics.snookerSpots(this.world.table)[id];
     }
 
     evaluateSnooker(cueFoul) {
@@ -1064,7 +1284,9 @@
       const redsBefore = this.undoStack.at(-1).world.balls.filter((b) => !b.pocketed && b.kind === 'snooker' && b.value === 1).length;
       const expectedRed = expected === 'red';
       const firstLegal = first && (expectedRed ? first.value === 1 : expected === 'color' ? first.value > 1 : first.id === expected);
-      let foul = cueFoul || !firstLegal;
+      // A ball forced off the table is a foul; colours come back to their spots.
+      const objectsOff = this.shotRecord.offTable.filter((id) => id !== 'cue').map((id) => this.world.getBall(id)).filter(Boolean);
+      let foul = cueFoul || !firstLegal || objectsOff.length > 0;
       let points = 0;
 
       if (expectedRed) {
@@ -1105,9 +1327,9 @@
         // Official penalty: at least 4, raised to the value of the ball on,
         // the ball first struck, or any ball wrongly potted.
         const onValue = expectedRed ? 1 : expected === 'color' ? 0 : (this.world.getBall(expected)?.value || 0);
-        const penalty = Math.max(4, onValue, first?.value || 0, ...objectPots.map((b) => b.value || 0));
+        const penalty = Math.max(4, onValue, first?.value || 0, ...[...objectPots, ...objectsOff].map((b) => b.value || 0));
         this.rule.scores[opponent] += penalty;
-        objectPots.filter((b) => b.value > 1).forEach((b) => this.world.respotBall(b, this.snookerSpot(b.id)));
+        [...objectPots, ...objectsOff].filter((b) => b.value > 1).forEach((b) => this.world.respotBall(b, this.snookerSpot(b.id)));
         this.rule.currentPlayer = opponent;
         this.toast(`犯规，P${opponent + 1} 获得 ${penalty} 分`);
       } else if (points > 0) {
@@ -1166,7 +1388,7 @@
         ball.pos = { ...position }; ball.vel = { x: 0, z: 0 }; ball.omega = { x: 0, y: 0, z: 0 };
         ball.posY = 0; ball.velY = 0;
         ball.railContact = null; ball.railTravel = null; ball.pocketFall = null;
-        ball.rotation = [0, 0, 0, 1]; ball.pocketed = false; ball.pocketId = null;
+        ball.rotation = [0, 0, 0, 1]; ball.pocketed = false; ball.offTable = false; ball.pocketId = null;
         ball.sinkTime = 0; ball.sinkDepth = 0; ball.sinkTarget = null; ball.lastSpeed = 0; ball.state = 'stationary';
       };
       this.world.balls.forEach((ball) => {
@@ -1182,6 +1404,8 @@
       this.power = setup.power; this.elevation = setup.elevation;
       this.activeDrill = setup.id;
       this.rule = this.createRuleState('chineseEight'); this.shotNumber = 1;
+      // A drill is a fixed layout, not a rack: no break, no cue ball in hand.
+      this.rule.breakShot = false; this.rule.ballInHand = null;
       this.undoStack.length = 0; this.actualTrails.clear(); this.effects.length = 0;
       this.shotRecord = this.emptyShotRecord(); this.prediction = null;
       $('#gameMode').value = 'chineseEight';
@@ -1211,7 +1435,7 @@
       this.cancelActiveDrags();
       this.exitPlacementSilently();
       this.clearDrillSelection();
-      this.world.setMode(mode);
+      this.world.setMode(mode, this.nextRackSeed());
       this.applyBallSkinColors();
       this.renderer.setTable(this.world.table);
       this.rule = this.createRuleState(mode);
@@ -1227,7 +1451,7 @@
       this.cancelActiveDrags();
       this.exitPlacementSilently();
       this.clearDrillSelection();
-      this.world.reset(mode);
+      this.world.reset(mode, this.nextRackSeed());
       this.world.setClothPreset($('#clothPreset').value);
       this.applyBallSkinColors();
       this.renderer.setTable(this.world.table);
@@ -1339,7 +1563,52 @@
       if (this.placement) this.togglePlacement();
       else if (this.paused) this.setPaused(false);
       else if (this.rule.winner != null) this.resetRack();
+      else if (this.rule.pendingChoice) { this.toast('请先选择非法开球的处理方式'); $('#ruleChoice')?.focus(); }
       else this.shoot();
+    }
+
+    // CBSA §5.2: after an illegal break the opponent may re-rack and break,
+    // make the breaker break again (a second illegal break loses the rack),
+    // or accept the table with the cue ball in hand.
+    applyRuleChoice(choice) {
+      const pending = this.rule.pendingChoice;
+      if (!pending || this.world.isMoving()) return;
+      this.rule.pendingChoice = null;
+      if (choice === 'accept') {
+        this.rule.currentPlayer = pending.chooser;
+        this.rule.ballInHand = 'table';
+        this.toast(`P${pending.chooser + 1} 接受台面，获得自由球`);
+      } else {
+        const breaker = choice === 'rebreak-breaker' ? pending.breaker : pending.chooser;
+        const warning = choice === 'rebreak-breaker' ? pending.breaker : null;
+        const scores = [...this.rule.scores];
+        this.cancelActiveDrags();
+        this.exitPlacementSilently();
+        this.world.reset(this.world.mode, this.nextRackSeed());
+        this.world.setClothPreset($('#clothPreset').value);
+        this.applyBallSkinColors();
+        this.renderer.setTable(this.world.table);
+        this.rule = this.createRuleState(this.world.mode);
+        this.rule.scores = scores;
+        this.rule.currentPlayer = breaker;
+        this.rule.breakWarning = warning;
+        this.shotNumber = 1;
+        this.undoStack.length = 0; this.actualTrails.clear(); this.effects.length = 0;
+        this.aimDirection = { x: 1, z: 0 };
+        this.toast(warning != null ? `重新摆球，P${breaker + 1} 再次开球（再犯判负）` : `重新摆球，由 P${breaker + 1} 开球`);
+      }
+      this.updateAllUI(); this.schedulePrediction(true);
+    }
+
+    updateRuleChoiceUI() {
+      const pending = this.rule.pendingChoice;
+      const panel = $('#ruleChoice');
+      panel.hidden = !pending;
+      if (!pending) return;
+      $('#ruleChoiceText').textContent = `P${pending.breaker + 1} 开球后没有进球，碰库的目标球不足 4 颗。请 P${pending.chooser + 1} 选择：`;
+      $('#ruleChoiceSelf').textContent = `P${pending.chooser + 1} 重新开球`;
+      $('#ruleChoiceBreaker').textContent = `P${pending.breaker + 1} 再开一次`;
+      $('#ruleChoiceAccept').textContent = `P${pending.chooser + 1} 自由球接着打`;
     }
 
     updateToggleButtons() {
@@ -1399,6 +1668,7 @@
       this.predictionDirty = true;
       if (!this.guidesEnabled || this.placement || this.world.isMoving()) {
         clearTimeout(this.predictionTimer); this.predictionTimer = null;
+        if (!this.guidesEnabled && !this.placement && !this.world.isMoving()) this.refreshStrokeReadouts();
         return;
       }
       // Throttle, not debounce: while a timer is pending, let it fire — it
@@ -1410,20 +1680,35 @@
       this.predictionTimer = setTimeout(() => { this.predictionTimer = null; this.updatePrediction(); }, delay);
     }
 
-    updatePrediction(extended = false) {
-      if ((!this.predictionDirty && !extended) || !this.guidesEnabled || this.placement || this.world.isMoving()) return;
+    updatePrediction() {
+      if (!this.predictionDirty || !this.guidesEnabled || this.placement || this.world.isMoving()) return;
       this.predictionDirty = false;
+      this.refreshStrokeReadouts();
       this.lastPredictionAt = performance.now();
-      // The 40 ms budget keeps aiming fluid but can truncate a long shot's
-      // tail on slow machines; once the aim goes quiet, one 200 ms pass
-      // finishes the story so the drawn line ends where the balls really
-      // stop instead of silently hiding a late scratch.
-      this.prediction = this.world.predictShot(this.shotOptions(), 12, extended ? 200 : 40);
-      this.updatePredictionMetrics();
-      clearTimeout(this.predictionUpgradeTimer);
-      if (this.prediction.truncated && !extended) {
-        this.predictionUpgradeTimer = setTimeout(() => { this.updatePrediction(true); }, 150);
+      // The preview runs in slices: the first one here so the guide appears
+      // at once, the rest a few milliseconds per frame until the balls stop.
+      // A long break used to cost one 40 ms stall per aim change plus a
+      // 200 ms freeze to finish its tail once the aim went quiet.
+      this.predictionJob = this.world.beginPrediction(this.shotOptions(), 12);
+      this.predictionPublished = null;
+      if (!this.predictionJob) {
+        this.prediction = this.world.predictShot(this.shotOptions(), 12, 0);
+        this.updatePredictionMetrics();
+        return;
       }
+      this.advancePredictionJob(10);
+    }
+
+    advancePredictionJob(budgetMs) {
+      const job = this.predictionJob;
+      if (!job) return;
+      // Anything that replaced or cleared the preview since (a shot, a reset,
+      // a caller installing its own) retires this run.
+      if (this.predictionPublished && this.prediction !== this.predictionPublished) { this.predictionJob = null; return; }
+      const done = this.world.advancePrediction(job, budgetMs);
+      this.prediction = this.predictionPublished = this.world.predictionResult(job);
+      this.updatePredictionMetrics();
+      if (done) this.predictionJob = null;
     }
 
     // Metrics echo the prediction; whenever the prediction is switched off
@@ -1445,8 +1730,8 @@
       } else {
         // No ball contact predicted: report what actually happens first —
         // a cushion, a direct pocket drop, or nothing at all.
-        const firstTouch = this.prediction.events.find((e) => (e.type === 'cushion' || e.type === 'pocket') && e.ballId === 'cue');
-        $('#firstHitMetric').textContent = firstTouch ? (firstTouch.type === 'cushion' ? '库边' : '直接落袋')
+        const firstTouch = this.prediction.events.find((e) => (e.type === 'cushion' || e.type === 'pocket' || e.type === 'offTable') && e.ballId === 'cue');
+        $('#firstHitMetric').textContent = firstTouch ? ({ cushion: '库边', pocket: '直接落袋', offTable: '飞出台面' }[firstTouch.type])
           : this.prediction.truncated ? '尚未到达' : '无接触';
       }
       const contact = this.predictedAimContact();
@@ -1491,6 +1776,9 @@
         // their density does not depend on the gear.
         const captureEvery = Math.max(1, Math.round(1 / 60 / fixed));
         let steps = 0;
+        // Nothing to integrate on a table at rest; resuming from an idle
+        // stretch must not replay it as a backlog either.
+        if (!this.world.inShot && !this.world.isMoving()) this.accumulator = 0;
         while (this.accumulator >= fixed && steps < 60) {
           this.world.step(fixed);
           this.accumulator -= fixed; steps += 1; this.trailFrame += 1;
@@ -1500,6 +1788,7 @@
         if (steps === 60 && this.accumulator > fixed * 10) this.accumulator = 0;
       }
       if (this.pendingSettle) this.settleShot();
+      if (this.predictionJob && !this.world.isMoving()) this.advancePredictionJob(6);
 
       const moving = this.world.isMoving();
       if (moving !== this.wasMoving) {
@@ -1507,13 +1796,17 @@
         this.updateMotionUI(moving);
         if (!moving) this.schedulePrediction(true);
       }
+      // The stroke geometry only matters while the stick is on show; solving
+      // it for every frame of a moving rack would be wasted work.
+      const showCue = !moving && !this.paused && !this.placement && !this.rule.pendingChoice;
+      const stroke = showCue ? this.strokeGeometry() : { elevation: this.elevation, tipX: this.tipX, tipY: this.tipY };
       this.renderer.render(this.world, {
-        showCue: !moving && !this.paused && !this.placement,
+        showCue,
         aimDirection: this.aimDirection,
-        elevation: this.effectiveElevation(),
+        elevation: stroke.elevation,
         pullback: this.pullback,
-        tipX: this.tipX,
-        tipY: this.tipY,
+        tipX: stroke.tipX,
+        tipY: stroke.tipY,
       });
       this.drawGuides(time);
       this.updateLiveTelemetry();
@@ -1548,7 +1841,27 @@
       if (this.gridEnabled) this.drawTableGrid(ctx);
       if (this.trailsEnabled) this.drawActualTrails(ctx);
       if (this.guidesEnabled && !this.world.isMoving() && this.prediction) this.drawPrediction(ctx);
+      if (this.rule.ballInHand && !this.world.isMoving() && !this.placement) this.drawBallInHand(ctx);
       this.drawEffects(ctx, time);
+    }
+
+    // A dashed ring marks a cue ball that may be picked up and placed.
+    drawBallInHand(ctx) {
+      const cue = this.world.getCueBall();
+      if (!cue || cue.pocketed) return;
+      const centre = this.renderer.project({ x: cue.pos.x, y: cue.radius, z: cue.pos.z });
+      if (!centre) return;
+      const radius = this.renderer.ballScreenRadius(cue) * 1.7;
+      ctx.save();
+      ctx.strokeStyle = 'rgba(236, 201, 109, .9)'; ctx.lineWidth = 1.4; ctx.setLineDash([4, 3]);
+      ctx.beginPath(); ctx.arc(centre.x, centre.y, radius, 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]); ctx.font = '600 9px ui-monospace, monospace'; ctx.textAlign = 'center';
+      ctx.fillStyle = 'rgba(5,20,16,.8)';
+      const label = this.rule.ballInHand === 'kitchen' ? '线后自由球' : '自由球';
+      const w = ctx.measureText(label).width;
+      ctx.fillRect(centre.x - w / 2 - 5, centre.y - radius - 19, w + 10, 15);
+      ctx.fillStyle = '#f3e3b0'; ctx.fillText(label, centre.x, centre.y - radius - 8);
+      ctx.restore();
     }
 
     tableClip(ctx) {
@@ -1595,8 +1908,10 @@
       ctx.save(); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
       for (const [id, path] of this.actualTrails) {
         if (path.length < 2) continue;
-        ctx.strokeStyle = id === 'cue' ? 'rgba(97, 244, 199, .25)' : 'rgba(229, 189, 101, .18)';
-        ctx.lineWidth = id === 'cue' ? 1.2 : 0.9; ctx.setLineDash([1, 4]);
+        // Dotted and dimmer than the solid prediction, but still readable on
+        // its own while a shot runs (the prediction is hidden then).
+        ctx.strokeStyle = id === 'cue' ? 'rgba(97, 244, 199, .5)' : 'rgba(229, 189, 101, .36)';
+        ctx.lineWidth = id === 'cue' ? 1.7 : 1.3; ctx.setLineDash([1.5, 4.5]);
         this.drawWorldPath(ctx, path);
       }
       ctx.restore();
@@ -1816,8 +2131,9 @@
         const pct = Math.round(Math.abs(value) * 100);
         return pct < 2 ? null : `${value > 0 ? positive : negative} ${pct}%`;
       };
-      const parts = [describe(this.tipX, '左', '右'), describe(this.tipY, '低', '高')].filter(Boolean);
-      $('#hudTip').textContent = parts.length ? parts.join(' · ') : '中心';
+      const stroke = this.strokeGeometry();
+      const parts = [describe(stroke.tipX, '左', '右'), describe(stroke.tipY, '低', '高')].filter(Boolean);
+      $('#hudTip').textContent = `${parts.length ? parts.join(' · ') : '中心'}${stroke.liftedTip ? '（杆被挡）' : ''}`;
       const trim = $('#hudTrim');
       trim.textContent = `${this.aimTrim > 0 ? '右 +' : this.aimTrim < 0 ? '左 −' : ''}${Math.abs(this.aimTrim).toFixed(2)}°`;
       trim.classList.toggle('hot', Math.abs(this.aimTrim) > 0.005);
@@ -1830,19 +2146,28 @@
       $('#spinXValue').textContent = `${this.tipX >= 0 ? '+' : ''}${Math.round(this.tipX * 100)}%`;
       $('#spinYValue').textContent = `${this.tipY >= 0 ? '+' : ''}${Math.round(this.tipY * 100)}%`;
       if (!this.world) return;
-      const impact = this.world.cueImpactMetrics(this.shotOptions());
-      this.lastImpactMetrics = impact;
-      $('#spinRpmValue').textContent = `${Math.round(Math.abs(impact.omega.y) * 60 / (2 * Math.PI))} rpm`;
-      const allowance = impact.aimAllowancePerMetre * 1000;
-      $('#spinAllowanceValue').textContent = allowance < 0.05 ? '0 mm/m' : `${impact.tipX > 0 ? '向右' : '向左'} ${allowance.toFixed(1)} mm/m`;
-      marker.classList.toggle('warning', impact.miscueMargin < 0.035);
+      this.refreshStrokeReadouts();
       $('#spinControl').setAttribute('aria-label', `母球击点：横向 ${Math.round(this.tipX * 100)}%，纵向 ${Math.round(this.tipY * 100)}%；方向键微调，Home 回中`);
       $$('.presets button').forEach((button) => {
         const [x, y] = button.dataset.spin.split(',').map(Number);
         const active = Math.abs(x - this.tipX) < 0.015 && Math.abs(y - this.tipY) < 0.015;
         button.classList.toggle('active', active); button.setAttribute('aria-pressed', String(active));
       });
+    }
+
+    // Readouts of the stroke that will actually be played: the automatic
+    // cue raise and tip lift depend on aim, ball position and nearby balls,
+    // not only on the tip marker, so aiming refreshes them too.
+    refreshStrokeReadouts() {
+      if (!this.world) return;
+      const impact = this.world.cueImpactMetrics(this.shotOptions());
+      this.lastImpactMetrics = impact;
+      $('#spinRpmValue').textContent = `${Math.round(Math.abs(impact.omega.y) * 60 / (2 * Math.PI))} rpm`;
+      const allowance = impact.aimAllowancePerMetre * 1000;
+      $('#spinAllowanceValue').textContent = allowance < 0.05 ? '0 mm/m' : `${impact.tipX > 0 ? '向右' : '向左'} ${allowance.toFixed(1)} mm/m`;
+      $('#spinMarker').classList.toggle('warning', impact.miscueMargin < 0.035);
       this.updateHud();
+      this.updateActionUI();
     }
 
     updateEquipmentHint() {
@@ -1858,29 +2183,41 @@
       $('#keyHud').classList.toggle('dimmed', moving);
       $('.stage-status').classList.toggle('busy', moving);
       $('#statusEyebrow').textContent = moving ? 'SIMULATING · 物理解算中' : 'READY · 准备击球';
-      $('#statusText').textContent = moving ? '观察旋转、碰撞与走位' : this.activeDrill ? '实验球位已固定；打一杆后撤销可做对照' : '移动指针瞄准，向后拖动击球';
+      $('#statusText').textContent = moving ? '观察旋转、碰撞与走位'
+        : this.activeDrill ? '实验球位已固定；打一杆后撤销可做对照'
+          : this.rule.pendingChoice ? `非法开球 · 等待 P${this.rule.pendingChoice.chooser + 1} 选择`
+            : this.rule.ballInHand === 'kitchen' ? '开球线后自由球：按住母球拖动摆放，再瞄准击球'
+              : this.rule.ballInHand ? '自由球：按住母球拖到任意位置，再瞄准击球'
+                : '移动指针瞄准，向后拖动击球';
       this.updateActionUI(moving);
     }
 
     updateActionUI(moving = this.world.isMoving()) {
       const button = $('#shootButton');
-      const label = this.placement ? '完成摆球' : this.paused ? '继续模拟' : this.rule.winner != null ? '再来一局' : moving ? '球运动中' : '击球';
-      button.disabled = moving && !this.paused && !this.placement;
+      const label = this.placement ? '完成摆球' : this.paused ? '继续模拟' : this.rule.winner != null ? '再来一局'
+        : moving ? '球运动中' : this.rule.pendingChoice ? '等待选择' : '击球';
+      button.disabled = (moving && !this.paused && !this.placement) || (Boolean(this.rule.pendingChoice) && !moving && !this.paused && !this.placement);
       if (button.querySelector('strong').textContent !== label) button.querySelector('strong').textContent = label;
       $('#undoButton').disabled = this.undoStack.length === 0;
       $('#pauseButton').setAttribute('aria-pressed', String(this.paused));
       const feedback = $('#shotFeedback');
       const impact = this.lastImpactMetrics;
-      const scratch = this.prediction?.events.some((event) => event.type === 'pocket' && event.ballId === 'cue');
-      const warning = !moving && !this.paused && !this.placement && (impact?.miscue || scratch);
+      const scratch = this.prediction?.events.find((event) => (event.type === 'pocket' || event.type === 'offTable') && event.ballId === 'cue');
+      const idle = !moving && !this.paused && !this.placement;
+      const stroke = idle ? this.strokeGeometry() : { raised: false, liftedTip: false, blocked: false, elevation: this.elevation, tipY: this.tipY };
+      const warning = idle && (impact?.miscue || scratch || stroke.liftedTip || stroke.blocked);
       const message = this.placement ? '拖动球调整布局，完成后即可击球。'
         : this.paused ? '模拟已暂停，点击底部按钮继续。'
         : moving ? '正在走位，可以暂停或切换慢动作观察。'
         : this.rule.winner != null ? `P${this.rule.winner + 1} 获胜，点击「再来一局」重新开始。`
+        : this.rule.pendingChoice ? '非法开球：请在球台上方的面板中选择处理方式。'
         : impact?.miscue ? '击点接近球边，容易疵杆。向中心收一点。'
-        : scratch ? '预测母球会落袋，试着减小力度或调整杆法。'
+        : stroke.blocked ? '球杆被库边或母球后方的球挡住，这个方向打不出去，换个角度或抬高杆。'
+        : stroke.liftedTip ? `球杆被库边或后方的球挡住，够不到原击点：击点已上移到${Math.abs(stroke.tipY) < 0.02 ? '中心' : `${stroke.tipY > 0 ? '高' : '低'} ${Math.round(Math.abs(stroke.tipY) * 100)}%`}，杆角 ${Math.round(stroke.elevation)}°。`
+        : scratch ? (scratch.type === 'offTable' ? '预测母球会飞出台面，减小力度或降低杆角。' : '预测母球会落袋，试着减小力度或调整杆法。')
+        : stroke.raised && stroke.elevation > this.elevation + 1 ? `球杆需要越过库边或后方的球，已自动抬高到 ${Math.round(stroke.elevation)}°${stroke.elevation >= 40 ? '；抬杆弧线含腾空与落地过程' : ''}。`
         : this.effectiveElevation() >= 40 ? '抬杆弧线含腾空与落地过程；起跳幅度尚未按实台标定。'
-        : this.effectiveElevation() > this.elevation + 1 ? '母球靠近库边，球杆已自动抬高以避让。'
+        : this.rule.ballInHand ? '自由球：按住母球拖动摆放，然后瞄准击球。'
         : '已准备好，瞄准后点击击球或按空格。';
       if (feedback.textContent !== message) feedback.textContent = message;
       feedback.classList.toggle('warning', Boolean(warning));
@@ -1891,7 +2228,7 @@
       const speed = cue && !cue.pocketed ? Math.hypot(cue.vel.x, cue.vel.z) : 0;
       const rpm = cue && !cue.pocketed ? Math.hypot(cue.omega.x, cue.omega.y, cue.omega.z) * 60 / (2 * Math.PI) : 0;
       $('#speedValue').textContent = speed.toFixed(2); $('#liveRpmValue').textContent = Math.round(rpm);
-      const stateLabels = { stationary: '静止', sliding: '滑动', rolling: '纯滚动', spinning: '原地旋转', airborne: '腾空', falling: '袋沿下落', pocketed: '已落袋' };
+      const stateLabels = { stationary: '静止', sliding: '滑动', rolling: '纯滚动', spinning: '原地旋转', airborne: '腾空', falling: '袋沿下落', pocketed: '已落袋', offTable: '飞出台面' };
       $('#motionStateValue').textContent = stateLabels[cue?.state] || '静止';
       if (cue && !cue.pocketed) {
         const slip = Math.hypot(cue.vel.x + cue.omega.z * cue.radius, cue.vel.z - cue.omega.x * cue.radius);
@@ -1909,7 +2246,11 @@
       $$('.scoreboard .player').forEach((element, index) => element.classList.toggle('active', index === this.rule.currentPlayer));
       $('#shotLabel').textContent = `第 ${this.shotNumber} 杆`;
       let hint = '瞄准线显示考虑当前杆法后的模拟轨迹';
-      if ((this.world.mode === 'eight' || this.world.mode === 'chineseEight') && this.rule.groups[0]) hint = `P1 ${this.rule.groups[0] === 'solid' ? '全色' : '花色'} · P2 ${this.rule.groups[1] === 'solid' ? '全色' : '花色'}`;
+      if (this.world.mode === 'eight' || this.world.mode === 'chineseEight') {
+        hint = this.rule.groups[0] ? `P1 ${this.rule.groups[0] === 'solid' ? '全色' : '花色'} · P2 ${this.rule.groups[1] === 'solid' ? '全色' : '花色'}`
+          : this.rule.breakShot ? '开球：至少进 1 球或 4 颗目标球碰库'
+            : this.world.mode === 'chineseEight' ? '开放球局：打进先碰球组的球即确定球组' : '开放球局：合法打进的全色或花色球确定球组';
+      }
       if (this.world.mode === 'nine') hint = `当前应先击打 ${this.lowestNineBall() ?? '—'} 号球`;
       if (this.world.mode === 'snooker') hint = this.rule.winner != null ? `本局已结束 · P${this.rule.winner + 1} 获胜` : `当前目标：${this.snookerTargetLabel()}`;
       $('#shotHint').textContent = hint;
@@ -1923,6 +2264,14 @@
       $('#tipType').value = this.world.tipType;
       $('#clothPreset').value = this.world.clothPreset;
       this.updatePowerUI(); this.updateElevationUI(); this.updateSpinUI(); this.updateEquipmentHint(); this.updateScoreboard(); this.updateMotionUI(this.world.isMoving());
+      this.updateRuleChoiceUI();
+      // The panel's ball emblem follows the game: an 8, the yellow 9, a red.
+      const emblem = $('.panel-ball');
+      if (emblem) {
+        const kind = { nine: 'nine', snooker: 'snooker' }[this.world.mode] || 'eight';
+        emblem.dataset.kind = kind;
+        emblem.textContent = kind === 'nine' ? '9' : kind === 'snooker' ? '' : '8';
+      }
     }
 
     updateFps(time) {

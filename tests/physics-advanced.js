@@ -153,7 +153,7 @@ for (const angle of [0, 0.7, 2.1, Math.PI]) for (const vertical of [-0.49, -0.29
   const { w, c, R } = rig(), depth = 0.0001, dt = 0.000001;
   c.pos = { x: w.table.width / 2 - R + depth, z: 0.1 }; c.vel.x = 1; c.omega.z = -80;
   const sin = (w.table.cushionContactHeight - R) / R, cos = Math.sqrt(1 - sin * sin);
-  const fn = 1.5e7 * depth ** 1.5 * (1 + w.cushionDamping());
+  const fn = 1.5e7 * depth ** 1.5 * (1 + w.params.cushionHysteresis) + w.params.cushionViscosity;
   const ff = w.params.frictionCushion * fn;
   const load = c.mass * G + fn * sin - ff * cos;
   const slate = w.params.muSlide * load;
@@ -181,30 +181,68 @@ for (const ratio of [-8, -2, 0, 1, 4, 8]) for (const side of [-100, 0, 100]) {
 }
 {
   const { w, c, R } = rig(); c.pos = { x: w.table.width / 2 - R - 0.001, z: 0 };
-  c.vel.x = 5; w.params.muSlide = w.params.muRoll = w.params.frictionCushion = 0; w.cushionDamping = () => 0;
+  c.vel.x = 5; w.params.muSlide = w.params.muRoll = w.params.frictionCushion = 0; w.params.cushionHysteresis = w.params.cushionViscosity = 0;
   const before = w.totalEnergy(); let hit = false;
   w.onEvent(e => { if (e.type === 'cushion') hit = true; }); simulate(w, 0.00001, 0.1, () => hit);
   assert.ok(hit); assert.ok(w.totalEnergy() <= before * 1.0001, 'rail hop manufactured energy');
 }
 
+// No shot may gain energy at a cushion.  Two past leaks, both found in random
+// sweeps: a ball in flight sliding into the END of a straight cushion's span
+// started its episode 0.1 m deep (4.8 kJ, 208 m/s), and the tilted nose force
+// pushed a rising airborne ball up for free (balls launched a metre high).
+{
+  const sweep = (mode, cue, options) => {
+    const w = new PhysicsWorld(mode, { silent: true });
+    const c = w.getCueBall(); w.balls = [c]; c.pos = { ...cue };
+    assert.ok(w.strike(options));
+    const start = w.totalEnergy(); let peak = start;
+    for (let i = 0; i < 12000 && w.isMoving(); i += 1) { w.step(0.001); peak = Math.max(peak, w.totalEnergy()); }
+    return peak / start;
+  };
+  near(sweep('chineseEight', { x: -0.1979, z: 0.3961 },
+    { direction: { x: 1.4712, z: 0.23826 }, speed: 7.98, tipX: 0.358, tipY: 0.214, elevation: 20.16 }), 1, 1e-6, 'deep cushion entry created energy');
+  near(sweep('snooker', { x: 0.9136, z: 0.4431 },
+    { direction: { x: 0.36419, z: -0.93133 }, speed: 5.877, tipX: -0.157, tipY: 0.211, elevation: 24.11 }), 1, 1e-6, 'airborne cushion contact created energy');
+  let seed = 2026;
+  const random = () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296);
+  for (const mode of ['chineseEight', 'eight', 'snooker']) for (let k = 0; k < 30; k += 1) {
+    const probe = new PhysicsWorld(mode, { silent: true }), R = probe.params.radius;
+    const hx = probe.table.width / 2 - R - 0.01, hz = probe.table.height / 2 - R - 0.01;
+    const cue = { x: (random() * 2 - 1) * hx, z: (random() * 2 - 1) * hz };
+    const pocket = probe.table.pockets[Math.floor(random() * 6)];
+    const angle = Math.atan2(pocket.z - cue.z, pocket.x - cue.x) + (random() - 0.5) * 0.6;
+    const ratio = sweep(mode, cue, { direction: { x: Math.cos(angle), z: Math.sin(angle) }, speed: 0.3 + random() * 9.5,
+      tipX: (random() * 2 - 1) * 0.7, tipY: (random() * 2 - 1) * 0.7, elevation: random() * 50 });
+    assert.ok(ratio < 1 + 1e-6, `${mode} random shot ${k} gained energy (×${ratio.toFixed(4)})`);
+  }
+}
+
 // Long draw must retain the right sign until impact and reach the BACK rail,
 // without a returning object ball supplying a second, hidden impulse.
-function longDraw(power, tipY, dt) {
+function longDraw(power, tipY, dt, elevation = 0) {
   const { w, c, o, R } = rig(true); c.pos.x = -1.1; o.pos = { x: -1.1 + 1.8 + 2 * R, z: 0 };
   let contact = null, rail = null;
   w.onEvent(e => {
     if (e.type === 'ball-ball' && !contact) { contact = { x: c.pos.x }; o.pocketed = true; o.sinkTarget = null; }
     if (e.type === 'cushion' && e.ballId === 'cue') rail = e;
   });
-  w.strike({ direction: { x: 1, z: 0 }, speed: 0.18 + 6.15 * power ** 1.34, tipY, elevation: Math.atan2(0.034, 0.22) * 180 / Math.PI });
+  w.strike({ direction: { x: 1, z: 0 }, speed: 0.18 + 6.15 * power ** 1.34, tipY, elevation });
   let minX = Infinity;
   simulate(w, dt, 12, () => { if (contact) minX = Math.min(minX, c.pos.x); return Boolean(rail); });
   return { c, contact, rail, retreat: contact.x - minX };
 }
-const deep = longDraw(0.8, -0.65, 0.001), deepFine = longDraw(0.8, -0.65, 0.0001);
+// A full-table power draw needs a full, level stroke: off-centre, the same
+// cue speed leaves the ball slower (TP A.30), so 80% no longer reaches.
+const deep = longDraw(1.0, -0.65, 0.001), deepFine = longDraw(1.0, -0.65, 0.0001);
 assert.equal(deep.rail?.cushionId, 'left'); assert.ok(deep.c.vel.x > 0.1); assert.ok(deep.retreat > 1.9);
 near(deep.retreat, deepFine.retreat, 0.005, 'long draw step convergence');
-assert.equal(longDraw(0.62, -0.45, 0.001).rail, null, 'weak shallow draw should not magically retain backspin');
+// Its backspin wears off before contact, so the ball follows on: it may
+// reach the far rail, never the back one.
+assert.notEqual(longDraw(0.62, -0.45, 0.001).rail?.cushionId, 'left', 'weak shallow draw should not magically retain backspin');
+// Raising the butt to clear a rail costs draw (TP B.10): the slate's
+// friction and the hops it causes take backspin before the object ball.
+assert.ok(longDraw(1.0, -0.65, 0.001, 9).retreat < deep.retreat - 0.1, 'an elevated power draw should come back shorter');
 
 // Free sliding must agree with the rigid-sphere analytic velocity and
 // parabolic position, independent of cloth coefficient or English mirror.
@@ -267,4 +305,4 @@ for (const dt of [0.001, 0.0001]) {
   assert.equal(w.getCueBall().railTravel, null);
 }
 
-console.log(`CueLab advanced physics passed (600 spatial cases, raised-nose forces, ${railCases} rail energy cases, draw/follow/massé drills, analytic curves, observation isolation).`);
+console.log(`CueLab advanced physics passed (600 spatial cases, raised-nose forces, ${railCases} rail energy cases, draw/follow/massé drills, cushion energy sweep, analytic curves, observation isolation).`);
